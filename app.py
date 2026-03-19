@@ -3,6 +3,9 @@ import requests
 import pandas as pd
 import time
 import json
+import re
+import unicodedata
+from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Buscador de catálogo", layout="wide")
 
@@ -63,6 +66,67 @@ def extraer_director(x):
         return ", ".join(sorted(set(directores)))
 
     return None
+
+def normalizar_titulo(texto):
+    if not texto:
+        return ""
+    texto = str(texto).lower().strip()
+    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("utf-8")
+    texto = re.sub(r"[^\w\s]", " ", texto)
+    texto = re.sub(r"\s+", " ", texto).strip()
+    return texto
+
+def similitud_titulo(a, b):
+    a_norm = normalizar_titulo(a)
+    b_norm = normalizar_titulo(b)
+    if not a_norm or not b_norm:
+        return 0
+    return SequenceMatcher(None, a_norm, b_norm).ratio()
+
+def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None, object_type=None):
+    """
+    Elige el mejor resultado según:
+    - similitud de título
+    - cercanía de año (si existe)
+    """
+    if not results:
+        return None
+
+    mejor = None
+    mejor_score = -1
+
+    for r in results:
+        candidate_title = r.get("title") or r.get("name") or r.get("original_title") or r.get("original_name")
+        score_titulo = similitud_titulo(query_title, candidate_title)
+
+        score_year = 0
+        if expected_year:
+            try:
+                expected_year = int(expected_year)
+                fecha = r.get("release_date") or r.get("first_air_date")
+                if fecha and len(fecha) >= 4:
+                    result_year = int(fecha[:4])
+                    diff = abs(expected_year - result_year)
+                    if diff == 0:
+                        score_year = 0.2
+                    elif diff == 1:
+                        score_year = 0.1
+                    elif diff <= 3:
+                        score_year = 0.05
+            except Exception:
+                pass
+
+        score_total = score_titulo + score_year
+
+        if score_total > mejor_score:
+            mejor_score = score_total
+            mejor = r
+
+    # umbral mínimo para evitar matches absurdos
+    if mejor_score < 0.55:
+        return None
+
+    return mejor
 
 def preparar_dataframe(data):
     contents = data.get("contents", [])
@@ -145,7 +209,14 @@ def buscar_tmdb_y_detalles(title, year, object_type, api_key):
         search_response.raise_for_status()
         results = search_response.json().get("results", [])
 
-        if not results:
+        best = elegir_mejor_resultado_tmdb(
+            results,
+            query_title=title,
+            expected_year=year,
+            object_type=object_type
+        )
+
+        if not best:
             return {
                 "tmdb_id": None,
                 "tmdb_title_es": None,
@@ -155,7 +226,6 @@ def buscar_tmdb_y_detalles(title, year, object_type, api_key):
                 "tmdb_match": False,
             }
 
-        best = results[0]
         tmdb_id = best.get("id")
         tmdb_title_es = best.get("title") or best.get("name")
         tmdb_overview_es = best.get("overview")
@@ -216,6 +286,75 @@ def buscar_tmdb_y_detalles(title, year, object_type, api_key):
             "tmdb_match": False,
         }
 
+def buscar_tmdb_multi(row, api_key):
+    """
+    Mejora el matching, especialmente para series:
+    - prueba varios títulos posibles
+    - para shows primero busca sin año
+    - luego, si falla, prueba con año
+    """
+    posibles_titulos = []
+    for campo in ["original_title", "title_display", "title_final", "title_es"]:
+        valor = row.get(campo)
+        if valor and str(valor).strip() and valor not in posibles_titulos:
+            posibles_titulos.append(valor)
+
+    object_type = row.get("object_type")
+    release_year = row.get("release_year")
+
+    # Para series: primero sin año
+    if object_type == "show":
+        for titulo in posibles_titulos:
+            result = buscar_tmdb_y_detalles(
+                titulo,
+                None,
+                object_type,
+                api_key
+            )
+            if result.get("tmdb_match"):
+                return result
+
+        for titulo in posibles_titulos:
+            result = buscar_tmdb_y_detalles(
+                titulo,
+                release_year,
+                object_type,
+                api_key
+            )
+            if result.get("tmdb_match"):
+                return result
+
+    # Para películas: primero con año, luego sin año
+    else:
+        for titulo in posibles_titulos:
+            result = buscar_tmdb_y_detalles(
+                titulo,
+                release_year,
+                object_type,
+                api_key
+            )
+            if result.get("tmdb_match"):
+                return result
+
+        for titulo in posibles_titulos:
+            result = buscar_tmdb_y_detalles(
+                titulo,
+                None,
+                object_type,
+                api_key
+            )
+            if result.get("tmdb_match"):
+                return result
+
+    return {
+        "tmdb_id": None,
+        "tmdb_title_es": None,
+        "tmdb_cast": None,
+        "tmdb_genres": None,
+        "tmdb_overview_es": None,
+        "tmdb_match": False,
+    }
+
 def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb):
     df_filtrado = df.copy()
 
@@ -261,12 +400,7 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
     progress = st.progress(0, text="Enriqueciendo filtro con TMDB...")
 
     for i, (idx, row) in enumerate(subset.iterrows(), start=1):
-        result = buscar_tmdb_y_detalles(
-            row.get("original_title"),
-            row.get("release_year"),
-            row.get("object_type"),
-            api_key
-        )
+        result = buscar_tmdb_multi(row, api_key)
 
         df.at[idx, "tmdb_id"] = result["tmdb_id"]
         df.at[idx, "tmdb_title_es"] = result["tmdb_title_es"]
