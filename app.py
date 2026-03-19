@@ -86,7 +86,7 @@ def similitud_titulo(a, b):
 def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None, object_type=None):
     """
     Elige el mejor resultado según:
-    - similitud de título
+    - mejor similitud entre query y cualquiera de los títulos disponibles
     - cercanía de año (si existe)
     """
     if not results:
@@ -96,17 +96,29 @@ def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None, object
     mejor_score = -1
 
     for r in results:
-        candidate_title = r.get("title") or r.get("name") or r.get("original_title") or r.get("original_name")
-        score_titulo = similitud_titulo(query_title, candidate_title)
+        posibles_titulos_resultado = [
+            r.get("title"),
+            r.get("name"),
+            r.get("original_title"),
+            r.get("original_name"),
+        ]
+
+        # calculamos la mejor similitud contra cualquiera de los nombres disponibles
+        similitudes = [
+            similitud_titulo(query_title, t)
+            for t in posibles_titulos_resultado
+            if t
+        ]
+        score_titulo = max(similitudes) if similitudes else 0
 
         score_year = 0
         if expected_year:
             try:
-                expected_year = int(expected_year)
+                expected_year_int = int(expected_year)
                 fecha = r.get("release_date") or r.get("first_air_date")
-                if fecha and len(fecha) >= 4:
-                    result_year = int(fecha[:4])
-                    diff = abs(expected_year - result_year)
+                if fecha and len(str(fecha)) >= 4:
+                    result_year = int(str(fecha)[:4])
+                    diff = abs(expected_year_int - result_year)
                     if diff == 0:
                         score_year = 0.2
                     elif diff == 1:
@@ -122,11 +134,13 @@ def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None, object
             mejor_score = score_total
             mejor = r
 
-    # umbral mínimo para evitar matches absurdos
-    if mejor_score < 0.55:
+    # umbral un poco más flexible para series/localizaciones
+    if mejor_score < 0.50:
         return None
 
     return mejor
+
+
 
 def preparar_dataframe(data):
     contents = data.get("contents", [])
