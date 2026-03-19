@@ -103,20 +103,20 @@ def buscar_tmdb_titulo_es(title, year, object_type, api_key):
 def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb):
     df_filtrado = df.copy()
 
+    campo_busqueda = "title_display" if "title_display" in df_filtrado.columns else "title_final"
+
     if search:
-        campo_busqueda = "title_display" if "title_display" in df_filtrado.columns else "title_final"
         df_filtrado = df_filtrado[
             df_filtrado[campo_busqueda].astype(str).str.contains(search, case=False, na=False)
         ]
 
-    if selected_type != "Todos":
+    if selected_type != "Todos" and "object_type" in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado["object_type"] == selected_type]
 
     if unique_titles:
-        campo_unico = "title_display" if "title_display" in df_filtrado.columns else "title_final"
-        df_filtrado = df_filtrado.drop_duplicates(subset=[campo_unico])
+        df_filtrado = df_filtrado.drop_duplicates(subset=[campo_busqueda])
 
-    if only_tmdb:
+    if only_tmdb and "tmdb_match" in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado["tmdb_match"] == True]
 
     return df_filtrado
@@ -124,7 +124,6 @@ def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb):
 def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, max_items=None):
     df = df.copy()
 
-    # Importante: aquí NO aplicamos only_tmdb=True
     subset = aplicar_filtros(
         df,
         search=search,
@@ -133,7 +132,6 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         only_tmdb=False
     )
 
-    # Solo los que no tengan todavía TMDB
     subset = subset[subset["tmdb_match"] != True]
 
     if max_items is not None:
@@ -167,7 +165,7 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
 def convertir_a_csv(df):
     return df.to_csv(index=False).encode("utf-8-sig")
 
-# Estado
+# Estado de sesión
 if "df_catalogo" not in st.session_state:
     st.session_state.df_catalogo = None
 
@@ -201,7 +199,10 @@ if st.session_state.df_catalogo is not None:
 
     search = st.text_input("🔎 Buscar por título")
 
-    object_types = sorted(df["object_type"].dropna().unique().tolist())
+    object_types = []
+    if "object_type" in df.columns:
+        object_types = sorted(df["object_type"].dropna().unique().tolist())
+
     selected_type = st.selectbox("Tipo de contenido", ["Todos"] + object_types)
 
     unique_titles = st.checkbox("Mostrar solo títulos únicos")
@@ -229,6 +230,9 @@ if st.session_state.df_catalogo is not None:
 
     df_filtrado = aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb)
 
+    # Debug temporal para comprobar si crew_members llega al dataframe
+    st.write("Columnas disponibles:", df_filtrado.columns.tolist())
+
     columnas_mostrar = [
         col for col in [
             "id",
@@ -239,9 +243,9 @@ if st.session_state.df_catalogo is not None:
             "object_type",
             "release_year",
             "runtime",
+            "crew_members",
             "show_id",
             "tmdb_match"
-"crew_members",
         ] if col in df_filtrado.columns
     ]
 
@@ -249,7 +253,7 @@ if st.session_state.df_catalogo is not None:
     st.write(f"Resultados encontrados: {len(df_filtrado)}")
     st.dataframe(df_filtrado[columnas_mostrar], use_container_width=True)
 
-    csv_data = convertir_a_csv(df_filtrado)
+    csv_data = convertir_a_csv(df_filtrado[columnas_mostrar])
 
     st.download_button(
         label="⬇️ Descargar resultados filtrados en CSV",
