@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import time
+import json
 
 st.set_page_config(page_title="Buscador de catálogo", layout="wide")
 
@@ -22,6 +23,82 @@ def get_spanish_title(x):
                 return x[key]
     return None
 
+def crew_to_json(x):
+    try:
+        if isinstance(x, (list, dict)):
+            return json.dumps(x, ensure_ascii=False)
+        return str(x) if x is not None else None
+    except Exception:
+        return None
+
+def extraer_director(x):
+    if not isinstance(x, list):
+        return None
+
+    directores = []
+
+    for item in x:
+        if not isinstance(item, dict):
+            continue
+
+        nombre = (
+            item.get("name")
+            or item.get("full_name")
+            or item.get("person_name")
+            or item.get("title")
+        )
+
+        rol = str(
+            item.get("role")
+            or item.get("job")
+            or item.get("profession")
+            or item.get("type")
+            or ""
+        ).lower()
+
+        if nombre and any(palabra in rol for palabra in ["director", "directed", "direction", "réalisation"]):
+            directores.append(nombre)
+
+    if directores:
+        return ", ".join(sorted(set(directores)))
+
+    return None
+
+def extraer_cast(x):
+    if not isinstance(x, list):
+        return None
+
+    actores = []
+
+    for item in x:
+        if not isinstance(item, dict):
+            continue
+
+        nombre = (
+            item.get("name")
+            or item.get("full_name")
+            or item.get("person_name")
+            or item.get("title")
+        )
+
+        rol = str(
+            item.get("role")
+            or item.get("job")
+            or item.get("profession")
+            or item.get("type")
+            or ""
+        ).lower()
+
+        if nombre and any(palabra in rol for palabra in [
+            "actor", "actress", "cast", "starring", "performer", "interprete", "intérprete"
+        ]):
+            actores.append(nombre)
+
+    if actores:
+        return ", ".join(sorted(set(actores)))
+
+    return None
+
 def preparar_dataframe(data):
     contents = data.get("contents", [])
     df = pd.DataFrame(contents)
@@ -29,23 +106,28 @@ def preparar_dataframe(data):
     if df.empty:
         return df
 
-    # Título desde el JSON si existe
     if "localized_titles" in df.columns:
         df["title_es"] = df["localized_titles"].apply(get_spanish_title)
     else:
         df["title_es"] = None
 
-    # Título base
     if "original_title" in df.columns:
         df["title_final"] = df["title_es"].fillna(df["original_title"])
     else:
         df["title_final"] = df["title_es"]
 
-    # Solo contenido editorial útil
     if "object_type" in df.columns:
         df = df[df["object_type"].isin(["movie", "show"])]
 
-    # Columnas TMDB
+    if "crew_members" in df.columns:
+        df["crew_members_json"] = df["crew_members"].apply(crew_to_json)
+        df["director"] = df["crew_members"].apply(extraer_director)
+        df["cast"] = df["crew_members"].apply(extraer_cast)
+    else:
+        df["crew_members_json"] = None
+        df["director"] = None
+        df["cast"] = None
+
     if "tmdb_title_es" not in df.columns:
         df["tmdb_title_es"] = None
 
@@ -165,7 +247,6 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
 def convertir_a_csv(df):
     return df.to_csv(index=False).encode("utf-8-sig")
 
-# Estado de sesión
 if "df_catalogo" not in st.session_state:
     st.session_state.df_catalogo = None
 
@@ -230,9 +311,6 @@ if st.session_state.df_catalogo is not None:
 
     df_filtrado = aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb)
 
-    # Debug temporal para comprobar si crew_members llega al dataframe
-    st.write("Columnas disponibles:", df_filtrado.columns.tolist())
-
     columnas_mostrar = [
         col for col in [
             "id",
@@ -243,7 +321,9 @@ if st.session_state.df_catalogo is not None:
             "object_type",
             "release_year",
             "runtime",
-            "crew_members",
+            "director",
+            "cast",
+            "crew_members_json",
             "show_id",
             "tmdb_match"
         ] if col in df_filtrado.columns
@@ -252,6 +332,13 @@ if st.session_state.df_catalogo is not None:
     st.subheader("Resultados")
     st.write(f"Resultados encontrados: {len(df_filtrado)}")
     st.dataframe(df_filtrado[columnas_mostrar], use_container_width=True)
+
+    if "director" in df_filtrado.columns and "cast" in df_filtrado.columns:
+        st.subheader("Prueba equipo artístico")
+        st.dataframe(
+            df_filtrado[["title_display", "director", "cast", "crew_members_json"]].head(10),
+            use_container_width=True
+        )
 
     csv_data = convertir_a_csv(df_filtrado[columnas_mostrar])
 
