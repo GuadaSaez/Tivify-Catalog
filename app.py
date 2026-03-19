@@ -91,7 +91,6 @@ def preparar_dataframe(data):
         df["crew_members_json"] = None
         df["director"] = None
 
-    # Columnas TMDB
     columnas_tmdb = {
         "tmdb_id": None,
         "tmdb_title_es": None,
@@ -112,16 +111,6 @@ def preparar_dataframe(data):
 
 @st.cache_data(show_spinner=False)
 def buscar_tmdb_y_detalles(title, year, object_type, api_key):
-    """
-    Busca el título en TMDB y luego consulta detalles + créditos.
-    Devuelve:
-    - tmdb_id
-    - tmdb_title_es
-    - tmdb_cast
-    - tmdb_genres
-    - tmdb_overview_es
-    - tmdb_match
-    """
     if not api_key or not title or not object_type:
         return {
             "tmdb_id": None,
@@ -152,7 +141,6 @@ def buscar_tmdb_y_detalles(title, year, object_type, api_key):
             pass
 
     try:
-        # 1. búsqueda
         search_response = requests.get(search_url, params=params, timeout=30)
         search_response.raise_for_status()
         results = search_response.json().get("results", [])
@@ -182,7 +170,6 @@ def buscar_tmdb_y_detalles(title, year, object_type, api_key):
                 "tmdb_match": True,
             }
 
-        # 2. detalles
         details_url = f"https://api.themoviedb.org/3/{endpoint}/{tmdb_id}"
         details_params = {
             "api_key": api_key,
@@ -196,7 +183,6 @@ def buscar_tmdb_y_detalles(title, year, object_type, api_key):
         genres = details_data.get("genres", [])
         tmdb_genres = ", ".join([g["name"] for g in genres if "name" in g]) if genres else None
 
-        # 3. créditos
         credits_url = f"https://api.themoviedb.org/3/{endpoint}/{tmdb_id}/credits"
         credits_params = {
             "api_key": api_key,
@@ -365,9 +351,7 @@ if st.session_state.df_catalogo is not None:
 
     columnas_mostrar = [
         col for col in [
-            "id",
             "original_title",
-            "title_es",
             "tmdb_title_es",
             "title_display",
             "object_type",
@@ -377,9 +361,6 @@ if st.session_state.df_catalogo is not None:
             "tmdb_cast",
             "tmdb_genres",
             "tmdb_overview_es",
-            "crew_members_json",
-            "show_id",
-            "tmdb_id",
             "tmdb_match"
         ] if col in df_filtrado.columns
     ]
