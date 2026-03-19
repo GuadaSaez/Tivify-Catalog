@@ -56,46 +56,11 @@ def extraer_director(x):
             or ""
         ).lower()
 
-        if nombre and any(palabra in rol for palabra in ["director", "directed", "direction", "réalisation"]):
+        if nombre and any(p in rol for p in ["director", "directed", "direction", "réalisation"]):
             directores.append(nombre)
 
     if directores:
         return ", ".join(sorted(set(directores)))
-
-    return None
-
-def extraer_cast(x):
-    if not isinstance(x, list):
-        return None
-
-    actores = []
-
-    for item in x:
-        if not isinstance(item, dict):
-            continue
-
-        nombre = (
-            item.get("name")
-            or item.get("full_name")
-            or item.get("person_name")
-            or item.get("title")
-        )
-
-        rol = str(
-            item.get("role")
-            or item.get("job")
-            or item.get("profession")
-            or item.get("type")
-            or ""
-        ).lower()
-
-        if nombre and any(palabra in rol for palabra in [
-            "actor", "actress", "cast", "starring", "performer", "interprete", "intérprete"
-        ]):
-            actores.append(nombre)
-
-    if actores:
-        return ", ".join(sorted(set(actores)))
 
     return None
 
@@ -122,17 +87,23 @@ def preparar_dataframe(data):
     if "crew_members" in df.columns:
         df["crew_members_json"] = df["crew_members"].apply(crew_to_json)
         df["director"] = df["crew_members"].apply(extraer_director)
-        df["cast"] = df["crew_members"].apply(extraer_cast)
     else:
         df["crew_members_json"] = None
         df["director"] = None
-        df["cast"] = None
 
-    if "tmdb_title_es" not in df.columns:
-        df["tmdb_title_es"] = None
+    # Columnas TMDB
+    columnas_tmdb = {
+        "tmdb_id": None,
+        "tmdb_title_es": None,
+        "tmdb_match": False,
+        "tmdb_cast": None,
+        "tmdb_genres": None,
+        "tmdb_overview_es": None,
+    }
 
-    if "tmdb_match" not in df.columns:
-        df["tmdb_match"] = False
+    for col, default_value in columnas_tmdb.items():
+        if col not in df.columns:
+            df[col] = default_value
 
     if "title_display" not in df.columns:
         df["title_display"] = df["title_final"]
@@ -140,12 +111,29 @@ def preparar_dataframe(data):
     return df
 
 @st.cache_data(show_spinner=False)
-def buscar_tmdb_titulo_es(title, year, object_type, api_key):
+def buscar_tmdb_y_detalles(title, year, object_type, api_key):
+    """
+    Busca el título en TMDB y luego consulta detalles + créditos.
+    Devuelve:
+    - tmdb_id
+    - tmdb_title_es
+    - tmdb_cast
+    - tmdb_genres
+    - tmdb_overview_es
+    - tmdb_match
+    """
     if not api_key or not title or not object_type:
-        return {"tmdb_title_es": None, "tmdb_match": False}
+        return {
+            "tmdb_id": None,
+            "tmdb_title_es": None,
+            "tmdb_cast": None,
+            "tmdb_genres": None,
+            "tmdb_overview_es": None,
+            "tmdb_match": False,
+        }
 
     endpoint = "movie" if object_type == "movie" else "tv"
-    url = f"https://api.themoviedb.org/3/search/{endpoint}"
+    search_url = f"https://api.themoviedb.org/3/search/{endpoint}"
 
     params = {
         "api_key": api_key,
@@ -164,23 +152,83 @@ def buscar_tmdb_titulo_es(title, year, object_type, api_key):
             pass
 
     try:
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        results = response.json().get("results", [])
+        # 1. búsqueda
+        search_response = requests.get(search_url, params=params, timeout=30)
+        search_response.raise_for_status()
+        results = search_response.json().get("results", [])
 
         if not results:
-            return {"tmdb_title_es": None, "tmdb_match": False}
+            return {
+                "tmdb_id": None,
+                "tmdb_title_es": None,
+                "tmdb_cast": None,
+                "tmdb_genres": None,
+                "tmdb_overview_es": None,
+                "tmdb_match": False,
+            }
 
         best = results[0]
+        tmdb_id = best.get("id")
         tmdb_title_es = best.get("title") or best.get("name")
+        tmdb_overview_es = best.get("overview")
+
+        if not tmdb_id:
+            return {
+                "tmdb_id": None,
+                "tmdb_title_es": tmdb_title_es,
+                "tmdb_cast": None,
+                "tmdb_genres": None,
+                "tmdb_overview_es": tmdb_overview_es,
+                "tmdb_match": True,
+            }
+
+        # 2. detalles
+        details_url = f"https://api.themoviedb.org/3/{endpoint}/{tmdb_id}"
+        details_params = {
+            "api_key": api_key,
+            "language": "es-ES"
+        }
+
+        details_response = requests.get(details_url, params=details_params, timeout=30)
+        details_response.raise_for_status()
+        details_data = details_response.json()
+
+        genres = details_data.get("genres", [])
+        tmdb_genres = ", ".join([g["name"] for g in genres if "name" in g]) if genres else None
+
+        # 3. créditos
+        credits_url = f"https://api.themoviedb.org/3/{endpoint}/{tmdb_id}/credits"
+        credits_params = {
+            "api_key": api_key,
+            "language": "es-ES"
+        }
+
+        credits_response = requests.get(credits_url, params=credits_params, timeout=30)
+        credits_response.raise_for_status()
+        credits_data = credits_response.json()
+
+        cast_list = credits_data.get("cast", [])
+        top_cast = [c.get("name") for c in cast_list[:8] if c.get("name")]
+        tmdb_cast = ", ".join(top_cast) if top_cast else None
 
         return {
+            "tmdb_id": tmdb_id,
             "tmdb_title_es": tmdb_title_es,
-            "tmdb_match": True
+            "tmdb_cast": tmdb_cast,
+            "tmdb_genres": tmdb_genres,
+            "tmdb_overview_es": tmdb_overview_es,
+            "tmdb_match": True,
         }
 
     except Exception:
-        return {"tmdb_title_es": None, "tmdb_match": False}
+        return {
+            "tmdb_id": None,
+            "tmdb_title_es": None,
+            "tmdb_cast": None,
+            "tmdb_genres": None,
+            "tmdb_overview_es": None,
+            "tmdb_match": False,
+        }
 
 def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb):
     df_filtrado = df.copy()
@@ -227,14 +275,18 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
     progress = st.progress(0, text="Enriqueciendo filtro con TMDB...")
 
     for i, (idx, row) in enumerate(subset.iterrows(), start=1):
-        result = buscar_tmdb_titulo_es(
+        result = buscar_tmdb_y_detalles(
             row.get("original_title"),
             row.get("release_year"),
             row.get("object_type"),
             api_key
         )
 
+        df.at[idx, "tmdb_id"] = result["tmdb_id"]
         df.at[idx, "tmdb_title_es"] = result["tmdb_title_es"]
+        df.at[idx, "tmdb_cast"] = result["tmdb_cast"]
+        df.at[idx, "tmdb_genres"] = result["tmdb_genres"]
+        df.at[idx, "tmdb_overview_es"] = result["tmdb_overview_es"]
         df.at[idx, "tmdb_match"] = result["tmdb_match"]
 
         progress.progress(i / total, text=f"Enriqueciendo filtro con TMDB... {i}/{total}")
@@ -322,9 +374,12 @@ if st.session_state.df_catalogo is not None:
             "release_year",
             "runtime",
             "director",
-            "cast",
+            "tmdb_cast",
+            "tmdb_genres",
+            "tmdb_overview_es",
             "crew_members_json",
             "show_id",
+            "tmdb_id",
             "tmdb_match"
         ] if col in df_filtrado.columns
     ]
@@ -332,13 +387,6 @@ if st.session_state.df_catalogo is not None:
     st.subheader("Resultados")
     st.write(f"Resultados encontrados: {len(df_filtrado)}")
     st.dataframe(df_filtrado[columnas_mostrar], use_container_width=True)
-
-    if "director" in df_filtrado.columns and "cast" in df_filtrado.columns:
-        st.subheader("Prueba equipo artístico")
-        st.dataframe(
-            df_filtrado[["title_display", "director", "cast", "crew_members_json"]].head(10),
-            use_container_width=True
-        )
 
     csv_data = convertir_a_csv(df_filtrado[columnas_mostrar])
 
