@@ -241,6 +241,7 @@ if st.session_state.df_catalogo is not None:
             "runtime",
             "show_id",
             "tmdb_match"
+"crew_members",
         ] if col in df_filtrado.columns
     ]
 
