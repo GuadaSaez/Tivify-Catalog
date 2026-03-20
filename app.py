@@ -83,12 +83,7 @@ def similitud_titulo(a, b):
         return 0
     return SequenceMatcher(None, a_norm, b_norm).ratio()
 
-def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None, object_type=None):
-    """
-    Elige el mejor resultado según:
-    - mejor similitud entre query y cualquiera de los títulos disponibles
-    - cercanía de año (si existe)
-    """
+def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None):
     if not results:
         return None
 
@@ -103,7 +98,6 @@ def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None, object
             r.get("original_name"),
         ]
 
-        # calculamos la mejor similitud contra cualquiera de los nombres disponibles
         similitudes = [
             similitud_titulo(query_title, t)
             for t in posibles_titulos_resultado
@@ -134,13 +128,10 @@ def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None, object
             mejor_score = score_total
             mejor = r
 
-    # umbral un poco más flexible para series/localizaciones
-    if mejor_score < 0.50:
+    if mejor_score < 0.45:
         return None
 
     return mejor
-
-
 
 def preparar_dataframe(data):
     contents = data.get("contents", [])
@@ -188,125 +179,151 @@ def preparar_dataframe(data):
     return df
 
 @st.cache_data(show_spinner=False)
-def buscar_tmdb_y_detalles(title, year, object_type, api_key):
-    if not api_key or not title or not object_type:
+def obtener_detalles_tmdb(tmdb_id, endpoint, api_key):
+    if not tmdb_id:
         return {
-            "tmdb_id": None,
-            "tmdb_title_es": None,
             "tmdb_cast": None,
             "tmdb_genres": None,
             "tmdb_overview_es": None,
-            "tmdb_match": False,
         }
 
-    endpoint = "movie" if object_type == "movie" else "tv"
-    search_url = f"https://api.themoviedb.org/3/search/{endpoint}"
+    details_url = f"https://api.themoviedb.org/3/{endpoint}/{tmdb_id}"
+    details_params = {
+        "api_key": api_key,
+        "language": "es-ES"
+    }
 
+    details_response = requests.get(details_url, params=details_params, timeout=30)
+    details_response.raise_for_status()
+    details_data = details_response.json()
+
+    genres = details_data.get("genres", [])
+    tmdb_genres = ", ".join([g["name"] for g in genres if "name" in g]) if genres else None
+    tmdb_overview_es = details_data.get("overview")
+
+    credits_url = f"https://api.themoviedb.org/3/{endpoint}/{tmdb_id}/credits"
+    credits_params = {
+        "api_key": api_key,
+        "language": "es-ES"
+    }
+
+    credits_response = requests.get(credits_url, params=credits_params, timeout=30)
+    credits_response.raise_for_status()
+    credits_data = credits_response.json()
+
+    cast_list = credits_data.get("cast", [])
+    top_cast = [c.get("name") for c in cast_list[:8] if c.get("name")]
+    tmdb_cast = ", ".join(top_cast) if top_cast else None
+
+    return {
+        "tmdb_cast": tmdb_cast,
+        "tmdb_genres": tmdb_genres,
+        "tmdb_overview_es": tmdb_overview_es,
+    }
+
+@st.cache_data(show_spinner=False)
+def buscar_tmdb_movie(title, year, api_key):
+    search_url = "https://api.themoviedb.org/3/search/movie"
     params = {
         "api_key": api_key,
         "query": title,
         "language": "es-ES"
     }
-
     if pd.notna(year):
         try:
-            year_int = int(year)
-            if endpoint == "movie":
-                params["year"] = year_int
-            else:
-                params["first_air_date_year"] = year_int
+            params["year"] = int(year)
         except Exception:
             pass
 
-    try:
-        search_response = requests.get(search_url, params=params, timeout=30)
-        search_response.raise_for_status()
-        results = search_response.json().get("results", [])
+    response = requests.get(search_url, params=params, timeout=30)
+    response.raise_for_status()
+    results = response.json().get("results", [])
 
-        best = elegir_mejor_resultado_tmdb(
-            results,
-            query_title=title,
-            expected_year=year,
-            object_type=object_type
-        )
+    best = elegir_mejor_resultado_tmdb(results, title, year)
+    if not best:
+        return None
 
-        if not best:
-            return {
-                "tmdb_id": None,
-                "tmdb_title_es": None,
-                "tmdb_cast": None,
-                "tmdb_genres": None,
-                "tmdb_overview_es": None,
-                "tmdb_match": False,
-            }
+    tmdb_id = best.get("id")
+    tmdb_title_es = best.get("title") or best.get("original_title")
+    detalles = obtener_detalles_tmdb(tmdb_id, "movie", api_key)
 
-        tmdb_id = best.get("id")
-        tmdb_title_es = best.get("title") or best.get("name")
-        tmdb_overview_es = best.get("overview")
+    return {
+        "tmdb_id": tmdb_id,
+        "tmdb_title_es": tmdb_title_es,
+        "tmdb_cast": detalles["tmdb_cast"],
+        "tmdb_genres": detalles["tmdb_genres"],
+        "tmdb_overview_es": detalles["tmdb_overview_es"],
+        "tmdb_match": True,
+    }
 
-        if not tmdb_id:
-            return {
-                "tmdb_id": None,
-                "tmdb_title_es": tmdb_title_es,
-                "tmdb_cast": None,
-                "tmdb_genres": None,
-                "tmdb_overview_es": tmdb_overview_es,
-                "tmdb_match": True,
-            }
+@st.cache_data(show_spinner=False)
+def buscar_tmdb_tv(title, year, api_key):
+    # intento 1: search/tv sin año
+    url_tv = "https://api.themoviedb.org/3/search/tv"
+    params_tv = {
+        "api_key": api_key,
+        "query": title,
+        "language": "es-ES"
+    }
 
-        details_url = f"https://api.themoviedb.org/3/{endpoint}/{tmdb_id}"
-        details_params = {
+    response_tv = requests.get(url_tv, params=params_tv, timeout=30)
+    response_tv.raise_for_status()
+    results_tv = response_tv.json().get("results", [])
+
+    best = elegir_mejor_resultado_tmdb(results_tv, title, None)
+
+    # intento 2: search/tv con año
+    if not best and pd.notna(year):
+        params_tv_year = {
             "api_key": api_key,
+            "query": title,
+            "language": "es-ES"
+        }
+        try:
+            params_tv_year["first_air_date_year"] = int(year)
+        except Exception:
+            pass
+
+        response_tv_year = requests.get(url_tv, params=params_tv_year, timeout=30)
+        response_tv_year.raise_for_status()
+        results_tv_year = response_tv_year.json().get("results", [])
+        best = elegir_mejor_resultado_tmdb(results_tv_year, title, year)
+
+    # intento 3: search/multi
+    if not best:
+        url_multi = "https://api.themoviedb.org/3/search/multi"
+        params_multi = {
+            "api_key": api_key,
+            "query": title,
             "language": "es-ES"
         }
 
-        details_response = requests.get(details_url, params=details_params, timeout=30)
-        details_response.raise_for_status()
-        details_data = details_response.json()
+        response_multi = requests.get(url_multi, params=params_multi, timeout=30)
+        response_multi.raise_for_status()
+        results_multi = response_multi.json().get("results", [])
 
-        genres = details_data.get("genres", [])
-        tmdb_genres = ", ".join([g["name"] for g in genres if "name" in g]) if genres else None
+        # solo resultados TV
+        results_multi_tv = [r for r in results_multi if r.get("media_type") == "tv"]
+        best = elegir_mejor_resultado_tmdb(results_multi_tv, title, year)
 
-        credits_url = f"https://api.themoviedb.org/3/{endpoint}/{tmdb_id}/credits"
-        credits_params = {
-            "api_key": api_key,
-            "language": "es-ES"
-        }
+    if not best:
+        return None
 
-        credits_response = requests.get(credits_url, params=credits_params, timeout=30)
-        credits_response.raise_for_status()
-        credits_data = credits_response.json()
+    tmdb_id = best.get("id")
+    tmdb_title_es = best.get("name") or best.get("original_name")
+    detalles = obtener_detalles_tmdb(tmdb_id, "tv", api_key)
 
-        cast_list = credits_data.get("cast", [])
-        top_cast = [c.get("name") for c in cast_list[:8] if c.get("name")]
-        tmdb_cast = ", ".join(top_cast) if top_cast else None
+    return {
+        "tmdb_id": tmdb_id,
+        "tmdb_title_es": tmdb_title_es,
+        "tmdb_cast": detalles["tmdb_cast"],
+        "tmdb_genres": detalles["tmdb_genres"],
+        "tmdb_overview_es": detalles["tmdb_overview_es"],
+        "tmdb_match": True,
+    }
 
-        return {
-            "tmdb_id": tmdb_id,
-            "tmdb_title_es": tmdb_title_es,
-            "tmdb_cast": tmdb_cast,
-            "tmdb_genres": tmdb_genres,
-            "tmdb_overview_es": tmdb_overview_es,
-            "tmdb_match": True,
-        }
-
-    except Exception:
-        return {
-            "tmdb_id": None,
-            "tmdb_title_es": None,
-            "tmdb_cast": None,
-            "tmdb_genres": None,
-            "tmdb_overview_es": None,
-            "tmdb_match": False,
-        }
-
+@st.cache_data(show_spinner=False)
 def buscar_tmdb_multi(row, api_key):
-    """
-    Mejora el matching, especialmente para series:
-    - prueba varios títulos posibles
-    - para shows primero busca sin año
-    - luego, si falla, prueba con año
-    """
     posibles_titulos = []
     for campo in ["original_title", "title_display", "title_final", "title_es"]:
         valor = row.get(campo)
@@ -316,49 +333,17 @@ def buscar_tmdb_multi(row, api_key):
     object_type = row.get("object_type")
     release_year = row.get("release_year")
 
-    # Para series: primero sin año
-    if object_type == "show":
+    try:
         for titulo in posibles_titulos:
-            result = buscar_tmdb_y_detalles(
-                titulo,
-                None,
-                object_type,
-                api_key
-            )
-            if result.get("tmdb_match"):
-                return result
+            if object_type == "movie":
+                result = buscar_tmdb_movie(titulo, release_year, api_key)
+            else:
+                result = buscar_tmdb_tv(titulo, release_year, api_key)
 
-        for titulo in posibles_titulos:
-            result = buscar_tmdb_y_detalles(
-                titulo,
-                release_year,
-                object_type,
-                api_key
-            )
-            if result.get("tmdb_match"):
+            if result and result.get("tmdb_match"):
                 return result
-
-    # Para películas: primero con año, luego sin año
-    else:
-        for titulo in posibles_titulos:
-            result = buscar_tmdb_y_detalles(
-                titulo,
-                release_year,
-                object_type,
-                api_key
-            )
-            if result.get("tmdb_match"):
-                return result
-
-        for titulo in posibles_titulos:
-            result = buscar_tmdb_y_detalles(
-                titulo,
-                None,
-                object_type,
-                api_key
-            )
-            if result.get("tmdb_match"):
-                return result
+    except Exception:
+        pass
 
     return {
         "tmdb_id": None,
