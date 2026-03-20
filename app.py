@@ -164,13 +164,14 @@ def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None):
 # CLASIFICACIÓN SHOWS
 # -------------------------
 GENRES_FICTION = {
-    "Drama", "Comedia", "Crimen", "Misterio", "Ciencia ficción", "Fantasía",
-    "Acción y aventura", "Animación", "Suspense", "Sci-Fi & Fantasy",
-    "Action & Adventure", "Mystery", "Crime", "Comedy", "Animation", "Family", "Kids"
+    "Drama", "Comedia", "Comedy", "Crimen", "Crime", "Misterio", "Mystery",
+    "Ciencia ficción", "Sci-Fi & Fantasy", "Fantasía", "Fantasy",
+    "Acción y aventura", "Action & Adventure", "Animation", "Animación",
+    "Family", "Kids", "Suspense", "Thriller"
 }
 
 GENRES_PROGRAM = {
-    "Documental", "News", "Reality", "Talk", "Documentary", "Soap"
+    "Documental", "Documentary", "News", "Reality", "Talk", "Soap"
 }
 
 def clasificar_show(row):
@@ -186,13 +187,12 @@ def clasificar_show(row):
 
     genres = {g.strip() for g in genres_str.split(",") if g.strip()}
 
-    if genres.intersection(GENRES_FICTION) and cast:
-        return "ficcion"
-
+    # Si tiene un género claramente no ficcional, manda eso
     if genres.intersection(GENRES_PROGRAM):
         return "programa"
 
-    if cast:
+    # Solo ficción si no tiene géneros de programa y además hay cast + género ficcional
+    if genres.intersection(GENRES_FICTION) and cast:
         return "ficcion"
 
     return "dudoso"
