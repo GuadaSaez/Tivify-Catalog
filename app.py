@@ -14,6 +14,27 @@ TMDB_API_KEY = st.secrets.get("TMDB_API_KEY", "")
 st.title("📺 Buscador de catálogo")
 
 # -------------------------
+# ESTADO INICIAL DE FILTROS
+# -------------------------
+if "search" not in st.session_state:
+    st.session_state.search = ""
+if "selected_type" not in st.session_state:
+    st.session_state.selected_type = "Todos"
+if "selected_show_class" not in st.session_state:
+    st.session_state.selected_show_class = "Todos"
+if "unique_titles" not in st.session_state:
+    st.session_state.unique_titles = False
+if "only_tmdb" not in st.session_state:
+    st.session_state.only_tmdb = False
+
+def limpiar_filtros():
+    st.session_state.search = ""
+    st.session_state.selected_type = "Todos"
+    st.session_state.selected_show_class = "Todos"
+    st.session_state.unique_titles = False
+    st.session_state.only_tmdb = False
+
+# -------------------------
 # CARGA JSON
 # -------------------------
 @st.cache_data
@@ -144,14 +165,12 @@ def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None):
 # -------------------------
 GENRES_FICTION = {
     "Drama", "Comedia", "Crimen", "Misterio", "Ciencia ficción", "Fantasía",
-    "Acción y aventura", "Animación", "Suspense", "War & Politics",
-    "Sci-Fi & Fantasy", "Action & Adventure", "Mystery", "Crime", "Drama",
-    "Comedy", "Animation", "Family", "Kids"
+    "Acción y aventura", "Animación", "Suspense", "Sci-Fi & Fantasy",
+    "Action & Adventure", "Mystery", "Crime", "Comedy", "Animation", "Family", "Kids"
 }
 
 GENRES_PROGRAM = {
-    "Documental", "News", "Reality", "Talk", "Documentary", "Soap",
-    "War & Politics"  # aquí puede haber ambigüedad, lo dejamos como no ficción salvo que haya cast fuerte
+    "Documental", "News", "Reality", "Talk", "Documentary", "Soap"
 }
 
 def clasificar_show(row):
@@ -167,15 +186,12 @@ def clasificar_show(row):
 
     genres = {g.strip() for g in genres_str.split(",") if g.strip()}
 
-    # si tiene géneros claramente de ficción y además cast, muy probable que sea serie de ficción
     if genres.intersection(GENRES_FICTION) and cast:
         return "ficcion"
 
-    # si tiene géneros claramente de programa/no ficción
     if genres.intersection(GENRES_PROGRAM):
         return "programa"
 
-    # si tiene cast y match, aunque no tengamos género claro, suele inclinar a ficción
     if cast:
         return "ficcion"
 
@@ -319,7 +335,6 @@ def buscar_tmdb_movie(title, year, api_key):
 # -------------------------
 @st.cache_data(show_spinner=False)
 def buscar_tmdb_tv(title, year, api_key):
-    # intento 1: search/tv sin año
     url_tv = "https://api.themoviedb.org/3/search/tv"
     params_tv = {
         "api_key": api_key,
@@ -333,7 +348,6 @@ def buscar_tmdb_tv(title, year, api_key):
 
     best = elegir_mejor_resultado_tmdb(results_tv, title, None)
 
-    # intento 2: search/tv con año
     if not best and pd.notna(year):
         params_tv_year = {
             "api_key": api_key,
@@ -350,7 +364,6 @@ def buscar_tmdb_tv(title, year, api_key):
         results_tv_year = response_tv_year.json().get("results", [])
         best = elegir_mejor_resultado_tmdb(results_tv_year, title, year)
 
-    # intento 3: search/multi
     if not best:
         url_multi = "https://api.themoviedb.org/3/search/multi"
         params_multi = {
@@ -494,15 +507,11 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         df.at[idx, "tmdb_overview_es"] = result["tmdb_overview_es"]
         df.at[idx, "tmdb_match"] = result["tmdb_match"]
 
-        # reclasificar show si aplica
-        df.at[idx, "show_classification"] = clasificar_show(df.loc[idx])
-
         progress.progress(i / total, text=f"Enriqueciendo filtro con TMDB... {i}/{total}")
         time.sleep(0.03)
 
     df["title_display"] = df["tmdb_title_es"].fillna(df["title_final"])
 
-    # recalcular clasificación por si había títulos ya enriquecidos
     if "object_type" in df.columns:
         mask_show = df["object_type"] == "show"
         df.loc[mask_show, "show_classification"] = df.loc[mask_show].apply(clasificar_show, axis=1)
@@ -526,9 +535,9 @@ json_url = st.text_input(
     value="https://mediasync.tvup.cloud/mexport/justwatch/Tivify%20B2C.json"
 )
 
-col1, col2 = st.columns(2)
+top1, top2, top3 = st.columns([1, 1, 1])
 
-with col1:
+with top1:
     if st.button("Cargar datos"):
         if json_url:
             try:
@@ -542,10 +551,14 @@ with col1:
         else:
             st.error("Por favor, introduce una URL")
 
+with top3:
+    if st.button("Limpiar filtros"):
+        limpiar_filtros()
+        st.rerun()
+
 if st.session_state.df_catalogo is not None:
     df = st.session_state.df_catalogo.copy()
 
-    # recalcular clasificación si ya hay datos enriquecidos
     if "object_type" in df.columns:
         mask_show = df["object_type"] == "show"
         df.loc[mask_show, "show_classification"] = df.loc[mask_show].apply(clasificar_show, axis=1)
@@ -554,21 +567,21 @@ if st.session_state.df_catalogo is not None:
 
     st.subheader("Filtros")
 
-    search = st.text_input("🔎 Buscar por título")
+    search = st.text_input("🔎 Buscar por título", key="search")
 
     object_types = []
     if "object_type" in df.columns:
         object_types = sorted(df["object_type"].dropna().unique().tolist())
 
-    selected_type = st.selectbox("Tipo de contenido", ["Todos"] + object_types)
+    selected_type = st.selectbox("Tipo de contenido", ["Todos"] + object_types, key="selected_type")
 
     show_class_options = ["Todos", "ficcion", "programa", "dudoso"]
-    selected_show_class = st.selectbox("Clasificación de shows", show_class_options)
+    selected_show_class = st.selectbox("Clasificación de shows", show_class_options, key="selected_show_class")
 
-    unique_titles = st.checkbox("Mostrar solo títulos únicos")
-    only_tmdb = st.checkbox("Mostrar solo títulos enriquecidos con TMDB")
+    unique_titles = st.checkbox("Mostrar solo títulos únicos", key="unique_titles")
+    only_tmdb = st.checkbox("Mostrar solo títulos enriquecidos con TMDB", key="only_tmdb")
 
-    with col2:
+    with top2:
         if st.button("Enriquecer filtro actual con TMDB"):
             if not TMDB_API_KEY:
                 st.error("No se ha encontrado la API key de TMDB en secrets.toml")
