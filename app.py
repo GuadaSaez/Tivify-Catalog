@@ -13,12 +13,18 @@ TMDB_API_KEY = st.secrets.get("TMDB_API_KEY", "")
 
 st.title("📺 Buscador de catálogo")
 
+# -------------------------
+# CARGA JSON
+# -------------------------
 @st.cache_data
 def cargar_json(url):
     response = requests.get(url, timeout=60)
     response.raise_for_status()
     return response.json()
 
+# -------------------------
+# UTILIDADES
+# -------------------------
 def get_spanish_title(x):
     if isinstance(x, dict):
         for key in ["es", "es-ES", "ES", "spa", "spanish"]:
@@ -133,6 +139,51 @@ def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None):
 
     return mejor
 
+# -------------------------
+# CLASIFICACIÓN SHOWS
+# -------------------------
+GENRES_FICTION = {
+    "Drama", "Comedia", "Crimen", "Misterio", "Ciencia ficción", "Fantasía",
+    "Acción y aventura", "Animación", "Suspense", "War & Politics",
+    "Sci-Fi & Fantasy", "Action & Adventure", "Mystery", "Crime", "Drama",
+    "Comedy", "Animation", "Family", "Kids"
+}
+
+GENRES_PROGRAM = {
+    "Documental", "News", "Reality", "Talk", "Documentary", "Soap",
+    "War & Politics"  # aquí puede haber ambigüedad, lo dejamos como no ficción salvo que haya cast fuerte
+}
+
+def clasificar_show(row):
+    if row.get("object_type") != "show":
+        return None
+
+    tmdb_match = bool(row.get("tmdb_match"))
+    cast = str(row.get("tmdb_cast") or "").strip()
+    genres_str = str(row.get("tmdb_genres") or "").strip()
+
+    if not tmdb_match:
+        return "dudoso"
+
+    genres = {g.strip() for g in genres_str.split(",") if g.strip()}
+
+    # si tiene géneros claramente de ficción y además cast, muy probable que sea serie de ficción
+    if genres.intersection(GENRES_FICTION) and cast:
+        return "ficcion"
+
+    # si tiene géneros claramente de programa/no ficción
+    if genres.intersection(GENRES_PROGRAM):
+        return "programa"
+
+    # si tiene cast y match, aunque no tengamos género claro, suele inclinar a ficción
+    if cast:
+        return "ficcion"
+
+    return "dudoso"
+
+# -------------------------
+# PREPARAR DATAFRAME
+# -------------------------
 def preparar_dataframe(data):
     contents = data.get("contents", [])
     df = pd.DataFrame(contents)
@@ -167,6 +218,7 @@ def preparar_dataframe(data):
         "tmdb_cast": None,
         "tmdb_genres": None,
         "tmdb_overview_es": None,
+        "show_classification": None,
     }
 
     for col, default_value in columnas_tmdb.items():
@@ -178,6 +230,9 @@ def preparar_dataframe(data):
 
     return df
 
+# -------------------------
+# TMDB DETALLES
+# -------------------------
 @st.cache_data(show_spinner=False)
 def obtener_detalles_tmdb(tmdb_id, endpoint, api_key):
     if not tmdb_id:
@@ -221,6 +276,9 @@ def obtener_detalles_tmdb(tmdb_id, endpoint, api_key):
         "tmdb_overview_es": tmdb_overview_es,
     }
 
+# -------------------------
+# TMDB MOVIES
+# -------------------------
 @st.cache_data(show_spinner=False)
 def buscar_tmdb_movie(title, year, api_key):
     search_url = "https://api.themoviedb.org/3/search/movie"
@@ -256,6 +314,9 @@ def buscar_tmdb_movie(title, year, api_key):
         "tmdb_match": True,
     }
 
+# -------------------------
+# TMDB SERIES
+# -------------------------
 @st.cache_data(show_spinner=False)
 def buscar_tmdb_tv(title, year, api_key):
     # intento 1: search/tv sin año
@@ -302,7 +363,6 @@ def buscar_tmdb_tv(title, year, api_key):
         response_multi.raise_for_status()
         results_multi = response_multi.json().get("results", [])
 
-        # solo resultados TV
         results_multi_tv = [r for r in results_multi if r.get("media_type") == "tv"]
         best = elegir_mejor_resultado_tmdb(results_multi_tv, title, year)
 
@@ -322,13 +382,26 @@ def buscar_tmdb_tv(title, year, api_key):
         "tmdb_match": True,
     }
 
+# -------------------------
+# BÚSQUEDA MULTI
+# -------------------------
 @st.cache_data(show_spinner=False)
 def buscar_tmdb_multi(row, api_key):
     posibles_titulos = []
+
     for campo in ["original_title", "title_display", "title_final", "title_es"]:
         valor = row.get(campo)
-        if valor and str(valor).strip() and valor not in posibles_titulos:
-            posibles_titulos.append(valor)
+        if valor and str(valor).strip():
+            valor = str(valor).strip()
+            if valor not in posibles_titulos:
+                posibles_titulos.append(valor)
+
+            valor_lower = valor.lower()
+            for prefijo in ["the ", "a ", "an ", "la ", "el ", "los ", "las "]:
+                if valor_lower.startswith(prefijo):
+                    sin_articulo = valor[len(prefijo):].strip()
+                    if sin_articulo and sin_articulo not in posibles_titulos:
+                        posibles_titulos.append(sin_articulo)
 
     object_type = row.get("object_type")
     release_year = row.get("release_year")
@@ -354,28 +427,40 @@ def buscar_tmdb_multi(row, api_key):
         "tmdb_match": False,
     }
 
-def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb):
+# -------------------------
+# FILTROS
+# -------------------------
+def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selected_show_class):
     df_filtrado = df.copy()
 
-    campo_busqueda = "title_display" if "title_display" in df_filtrado.columns else "title_final"
-
     if search:
-        df_filtrado = df_filtrado[
-            df_filtrado[campo_busqueda].astype(str).str.contains(search, case=False, na=False)
-        ]
+        mask = pd.Series(False, index=df_filtrado.index)
+
+        for campo in ["original_title", "tmdb_title_es", "title_display"]:
+            if campo in df_filtrado.columns:
+                mask = mask | df_filtrado[campo].astype(str).str.contains(search, case=False, na=False)
+
+        df_filtrado = df_filtrado[mask]
 
     if selected_type != "Todos" and "object_type" in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado["object_type"] == selected_type]
 
+    if selected_show_class != "Todos" and "show_classification" in df_filtrado.columns:
+        df_filtrado = df_filtrado[df_filtrado["show_classification"] == selected_show_class]
+
     if unique_titles:
-        df_filtrado = df_filtrado.drop_duplicates(subset=[campo_busqueda])
+        campo_unico = "title_display" if "title_display" in df_filtrado.columns else "original_title"
+        df_filtrado = df_filtrado.drop_duplicates(subset=[campo_unico])
 
     if only_tmdb and "tmdb_match" in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado["tmdb_match"] == True]
 
     return df_filtrado
 
-def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, max_items=None):
+# -------------------------
+# ENRIQUECER
+# -------------------------
+def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, selected_show_class, max_items=None):
     df = df.copy()
 
     subset = aplicar_filtros(
@@ -383,7 +468,8 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         search=search,
         selected_type=selected_type,
         unique_titles=unique_titles,
-        only_tmdb=False
+        only_tmdb=False,
+        selected_show_class=selected_show_class
     )
 
     subset = subset[subset["tmdb_match"] != True]
@@ -408,19 +494,33 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         df.at[idx, "tmdb_overview_es"] = result["tmdb_overview_es"]
         df.at[idx, "tmdb_match"] = result["tmdb_match"]
 
+        # reclasificar show si aplica
+        df.at[idx, "show_classification"] = clasificar_show(df.loc[idx])
+
         progress.progress(i / total, text=f"Enriqueciendo filtro con TMDB... {i}/{total}")
         time.sleep(0.03)
 
     df["title_display"] = df["tmdb_title_es"].fillna(df["title_final"])
+
+    # recalcular clasificación por si había títulos ya enriquecidos
+    if "object_type" in df.columns:
+        mask_show = df["object_type"] == "show"
+        df.loc[mask_show, "show_classification"] = df.loc[mask_show].apply(clasificar_show, axis=1)
 
     return df, total
 
 def convertir_a_csv(df):
     return df.to_csv(index=False).encode("utf-8-sig")
 
+# -------------------------
+# ESTADO
+# -------------------------
 if "df_catalogo" not in st.session_state:
     st.session_state.df_catalogo = None
 
+# -------------------------
+# UI
+# -------------------------
 json_url = st.text_input(
     "Pega la URL del JSON",
     value="https://mediasync.tvup.cloud/mexport/justwatch/Tivify%20B2C.json"
@@ -445,6 +545,11 @@ with col1:
 if st.session_state.df_catalogo is not None:
     df = st.session_state.df_catalogo.copy()
 
+    # recalcular clasificación si ya hay datos enriquecidos
+    if "object_type" in df.columns:
+        mask_show = df["object_type"] == "show"
+        df.loc[mask_show, "show_classification"] = df.loc[mask_show].apply(clasificar_show, axis=1)
+
     st.write(f"Número de contenidos tras limpieza editorial: {len(df)}")
 
     st.subheader("Filtros")
@@ -456,6 +561,9 @@ if st.session_state.df_catalogo is not None:
         object_types = sorted(df["object_type"].dropna().unique().tolist())
 
     selected_type = st.selectbox("Tipo de contenido", ["Todos"] + object_types)
+
+    show_class_options = ["Todos", "ficcion", "programa", "dudoso"]
+    selected_show_class = st.selectbox("Clasificación de shows", show_class_options)
 
     unique_titles = st.checkbox("Mostrar solo títulos únicos")
     only_tmdb = st.checkbox("Mostrar solo títulos enriquecidos con TMDB")
@@ -472,6 +580,7 @@ if st.session_state.df_catalogo is not None:
                         search=search,
                         selected_type=selected_type,
                         unique_titles=unique_titles,
+                        selected_show_class=selected_show_class,
                         max_items=None
                     )
                     st.session_state.df_catalogo = df_actualizado
@@ -480,7 +589,14 @@ if st.session_state.df_catalogo is not None:
                 except Exception as e:
                     st.error(f"Error al enriquecer el filtro: {e}")
 
-    df_filtrado = aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb)
+    df_filtrado = aplicar_filtros(
+        df,
+        search=search,
+        selected_type=selected_type,
+        unique_titles=unique_titles,
+        only_tmdb=only_tmdb,
+        selected_show_class=selected_show_class
+    )
 
     columnas_mostrar = [
         col for col in [
@@ -488,6 +604,7 @@ if st.session_state.df_catalogo is not None:
             "tmdb_title_es",
             "title_display",
             "object_type",
+            "show_classification",
             "release_year",
             "runtime",
             "director",
