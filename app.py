@@ -10,6 +10,7 @@ from difflib import SequenceMatcher
 st.set_page_config(page_title="Buscador de catálogo", layout="wide")
 
 TMDB_API_KEY = st.secrets.get("TMDB_API_KEY", "")
+OMDB_API_KEY = st.secrets.get("OMDB_API_KEY", "")
 
 st.title("📺 Buscador de catálogo")
 
@@ -187,15 +188,111 @@ def clasificar_show(row):
 
     genres = {g.strip() for g in genres_str.split(",") if g.strip()}
 
-    # Si tiene un género claramente no ficcional, manda eso
     if genres.intersection(GENRES_PROGRAM):
         return "programa"
 
-    # Solo ficción si no tiene géneros de programa y además hay cast + género ficcional
     if genres.intersection(GENRES_FICTION) and cast:
         return "ficcion"
 
     return "dudoso"
+
+# -------------------------
+# OMDB AWARDS
+# -------------------------
+def parse_awards_text(text):
+    text = str(text or "")
+
+    oscar_wins = 0
+    oscar_nominations = 0
+    golden_globe_wins = 0
+    golden_globe_nominations = 0
+
+    m = re.search(r"Won\s+(\d+)\s+Oscar", text, flags=re.IGNORECASE)
+    if m:
+        oscar_wins = int(m.group(1))
+
+    m = re.search(r"Nominated\s+for\s+(\d+)\s+Oscar", text, flags=re.IGNORECASE)
+    if m:
+        oscar_nominations = int(m.group(1))
+
+    m = re.search(r"Won\s+(\d+)\s+Golden Globe", text, flags=re.IGNORECASE)
+    if m:
+        golden_globe_wins = int(m.group(1))
+
+    m = re.search(r"Nominated\s+for\s+(\d+)\s+Golden Globe", text, flags=re.IGNORECASE)
+    if m:
+        golden_globe_nominations = int(m.group(1))
+
+    return {
+        "oscar_wins": oscar_wins,
+        "oscar_nominations": oscar_nominations,
+        "golden_globe_wins": golden_globe_wins,
+        "golden_globe_nominations": golden_globe_nominations,
+    }
+
+@st.cache_data(show_spinner=False)
+def buscar_omdb_awards(title, year, object_type, api_key):
+    if not api_key or not title:
+        return {
+            "awards_raw": None,
+            "oscar_wins": 0,
+            "oscar_nominations": 0,
+            "golden_globe_wins": 0,
+            "golden_globe_nominations": 0,
+            "omdb_match": False,
+        }
+
+    omdb_type = "movie" if object_type == "movie" else "series"
+
+    params = {
+        "apikey": api_key,
+        "t": title,
+        "type": omdb_type,
+        "r": "json",
+    }
+
+    if pd.notna(year):
+        try:
+            params["y"] = int(year)
+        except Exception:
+            pass
+
+    try:
+        response = requests.get("https://www.omdbapi.com/", params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("Response") != "True":
+            return {
+                "awards_raw": None,
+                "oscar_wins": 0,
+                "oscar_nominations": 0,
+                "golden_globe_wins": 0,
+                "golden_globe_nominations": 0,
+                "omdb_match": False,
+            }
+
+        awards_raw = data.get("Awards", "")
+        parsed = parse_awards_text(awards_raw)
+
+        return {
+            "awards_raw": awards_raw,
+            "oscar_wins": parsed["oscar_wins"],
+            "oscar_nominations": parsed["oscar_nominations"],
+            "golden_globe_wins": parsed["golden_globe_wins"],
+            "golden_globe_nominations": parsed["golden_globe_nominations"],
+            "omdb_match": True,
+        }
+
+    except Exception:
+        return {
+            "awards_raw": None,
+            "oscar_wins": 0,
+            "oscar_nominations": 0,
+            "golden_globe_wins": 0,
+            "golden_globe_nominations": 0,
+            "omdb_match": False,
+        }
 
 # -------------------------
 # PREPARAR DATAFRAME
@@ -238,6 +335,19 @@ def preparar_dataframe(data):
     }
 
     for col, default_value in columnas_tmdb.items():
+        if col not in df.columns:
+            df[col] = default_value
+
+    columnas_awards = {
+        "awards_raw": None,
+        "oscar_wins": 0,
+        "oscar_nominations": 0,
+        "golden_globe_wins": 0,
+        "golden_globe_nominations": 0,
+        "omdb_match": False,
+    }
+
+    for col, default_value in columnas_awards.items():
         if col not in df.columns:
             df[col] = default_value
 
@@ -507,6 +617,20 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         df.at[idx, "tmdb_overview_es"] = result["tmdb_overview_es"]
         df.at[idx, "tmdb_match"] = result["tmdb_match"]
 
+        awards_result = buscar_omdb_awards(
+            row.get("original_title"),
+            row.get("release_year"),
+            row.get("object_type"),
+            OMDB_API_KEY
+        )
+
+        df.at[idx, "awards_raw"] = awards_result["awards_raw"]
+        df.at[idx, "oscar_wins"] = awards_result["oscar_wins"]
+        df.at[idx, "oscar_nominations"] = awards_result["oscar_nominations"]
+        df.at[idx, "golden_globe_wins"] = awards_result["golden_globe_wins"]
+        df.at[idx, "golden_globe_nominations"] = awards_result["golden_globe_nominations"]
+        df.at[idx, "omdb_match"] = awards_result["omdb_match"]
+
         progress.progress(i / total, text=f"Enriqueciendo filtro con TMDB... {i}/{total}")
         time.sleep(0.03)
 
@@ -623,6 +747,10 @@ if st.session_state.df_catalogo is not None:
             "director",
             "tmdb_cast",
             "tmdb_genres",
+            "oscar_wins",
+            "oscar_nominations",
+            "golden_globe_wins",
+            "golden_globe_nominations",
             "tmdb_overview_es",
             "tmdb_match"
         ] if col in df_filtrado.columns
