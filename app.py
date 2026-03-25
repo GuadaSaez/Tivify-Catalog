@@ -646,12 +646,6 @@ def convertir_a_csv(df):
     return df.to_csv(index=False).encode("utf-8-sig")
 
 # -------------------------
-# ESTADO
-# -------------------------
-if "df_catalogo" not in st.session_state:
-    st.session_state.df_catalogo = None
-
-# -------------------------
 # UI
 # -------------------------
 json_url = st.text_input(
@@ -735,6 +729,7 @@ if st.session_state.df_catalogo is not None:
         selected_show_class=selected_show_class
     )
 
+    # columnas visibles en app
     columnas_mostrar = [
         col for col in [
             "original_title",
@@ -758,9 +753,35 @@ if st.session_state.df_catalogo is not None:
 
     st.subheader("Resultados")
     st.write(f"Resultados encontrados: {len(df_filtrado)}")
-    st.dataframe(df_filtrado[columnas_mostrar], use_container_width=True)
+    st.dataframe(
+        df_filtrado[columnas_mostrar],
+        width=2400,
+        height=520
+    )
 
-    csv_data = convertir_a_csv(df_filtrado[columnas_mostrar])
+    # columnas del CSV
+    columnas_csv = [
+        col for col in [
+            "original_title",
+            "tmdb_title_es",
+            "title_display",
+            "object_type",
+            "show_classification",
+            "release_year",
+            "runtime",
+            "director",
+            "tmdb_cast",
+            "tmdb_genres",
+            "oscar_wins",
+            "oscar_nominations",
+            "golden_globe_wins",
+            "golden_globe_nominations",
+            "tmdb_overview_es",
+            "tmdb_match"
+        ] if col in df_filtrado.columns
+    ]
+
+    csv_data = convertir_a_csv(df_filtrado[columnas_csv])
 
     st.download_button(
         label="⬇️ Descargar resultados filtrados en CSV",
