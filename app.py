@@ -10,6 +10,7 @@ from difflib import SequenceMatcher
 st.set_page_config(page_title="Buscador de catálogo", layout="wide")
 
 TMDB_API_KEY = st.secrets.get("TMDB_API_KEY", "")
+OMDB_API_KEY = st.secrets.get("OMDB_API_KEY", "")
 
 st.title("📺 Buscador de catálogo")
 
@@ -189,6 +190,54 @@ def clasificar_show(row):
     return "dudoso"
 
 # -------------------------
+# OMDB AWARDS RAW
+# -------------------------
+@st.cache_data(show_spinner=False)
+def buscar_omdb_awards_raw(title, year, object_type, api_key):
+    if not api_key or not title:
+        return {
+            "awards_raw": None,
+            "omdb_match": False,
+        }
+
+    omdb_type = "movie" if object_type == "movie" else "series"
+
+    params = {
+        "apikey": api_key,
+        "t": title,
+        "type": omdb_type,
+        "r": "json",
+    }
+
+    if pd.notna(year):
+        try:
+            params["y"] = int(year)
+        except Exception:
+            pass
+
+    try:
+        response = requests.get("https://www.omdbapi.com/", params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("Response") != "True":
+            return {
+                "awards_raw": None,
+                "omdb_match": False,
+            }
+
+        return {
+            "awards_raw": data.get("Awards"),
+            "omdb_match": True,
+        }
+
+    except Exception:
+        return {
+            "awards_raw": None,
+            "omdb_match": False,
+        }
+
+# -------------------------
 # CARGA JSON
 # -------------------------
 @st.cache_data
@@ -238,15 +287,12 @@ def preparar_dataframe(data):
         if col not in df.columns:
             df[col] = default_value
 
-    # columnas de premios vía CSV auxiliar
-    columnas_awards = {
-        "oscar_wins": 0,
-        "oscar_nominations": 0,
-        "golden_globe_wins": 0,
-        "golden_globe_nominations": 0,
+    columnas_omdb = {
+        "awards_raw": None,
+        "omdb_match": False,
     }
 
-    for col, default_value in columnas_awards.items():
+    for col, default_value in columnas_omdb.items():
         if col not in df.columns:
             df[col] = default_value
 
@@ -450,78 +496,6 @@ def buscar_tmdb_multi(row, api_key):
     }
 
 # -------------------------
-# CSV AUXILIAR DE PREMIOS
-# -------------------------
-def preparar_awards_dataframe(df_awards):
-    df_awards = df_awards.copy()
-    df_awards.columns = [c.strip() for c in df_awards.columns]
-
-    columnas_requeridas = [
-        "original_title",
-        "release_year",
-        "oscar_nominations",
-        "oscar_wins",
-        "golden_globe_nominations",
-        "golden_globe_wins",
-    ]
-
-    faltan = [c for c in columnas_requeridas if c not in df_awards.columns]
-    if faltan:
-        raise ValueError(f"Faltan columnas en el CSV de premios: {', '.join(faltan)}")
-
-    df_awards["title_key"] = df_awards["original_title"].apply(normalizar_titulo)
-    df_awards["release_year"] = pd.to_numeric(df_awards["release_year"], errors="coerce").astype("Int64")
-
-    for col in [
-        "oscar_nominations",
-        "oscar_wins",
-        "golden_globe_nominations",
-        "golden_globe_wins",
-    ]:
-        df_awards[col] = pd.to_numeric(df_awards[col], errors="coerce").fillna(0).astype(int)
-
-    df_awards = df_awards.drop_duplicates(subset=["title_key", "release_year"])
-
-    return df_awards
-
-def aplicar_awards_csv(df_catalogo, df_awards):
-    df = df_catalogo.copy()
-
-    df["title_key"] = df["original_title"].apply(normalizar_titulo)
-    df["release_year"] = pd.to_numeric(df["release_year"], errors="coerce").astype("Int64")
-
-    merge_cols = [
-        "title_key",
-        "release_year",
-        "oscar_nominations",
-        "oscar_wins",
-        "golden_globe_nominations",
-        "golden_globe_wins",
-    ]
-
-    df = df.merge(
-        df_awards[merge_cols],
-        on=["title_key", "release_year"],
-        how="left",
-        suffixes=("", "_awards")
-    )
-
-    for col in [
-        "oscar_nominations",
-        "oscar_wins",
-        "golden_globe_nominations",
-        "golden_globe_wins",
-    ]:
-        awards_col = f"{col}_awards"
-        if awards_col in df.columns:
-            df[col] = df[awards_col].fillna(df[col]).fillna(0).astype(int)
-            df = df.drop(columns=[awards_col])
-
-    df = df.drop(columns=["title_key"])
-
-    return df
-
-# -------------------------
 # FILTROS
 # -------------------------
 def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selected_show_class):
@@ -588,6 +562,16 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         df.at[idx, "tmdb_overview_es"] = result["tmdb_overview_es"]
         df.at[idx, "tmdb_match"] = result["tmdb_match"]
 
+        awards_result = buscar_omdb_awards_raw(
+            row.get("original_title"),
+            row.get("release_year"),
+            row.get("object_type"),
+            OMDB_API_KEY
+        )
+
+        df.at[idx, "awards_raw"] = awards_result["awards_raw"]
+        df.at[idx, "omdb_match"] = awards_result["omdb_match"]
+
         progress.progress(i / total, text=f"Enriqueciendo filtro con TMDB... {i}/{total}")
         time.sleep(0.03)
 
@@ -630,21 +614,6 @@ with top3:
     if st.button("Limpiar filtros"):
         limpiar_filtros()
         st.rerun()
-
-awards_file = st.file_uploader(
-    "Sube CSV auxiliar de premios (opcional)",
-    type=["csv"],
-    help="Columnas: original_title, release_year, oscar_nominations, oscar_wins, golden_globe_nominations, golden_globe_wins"
-)
-
-if awards_file is not None and st.session_state.df_catalogo is not None:
-    try:
-        df_awards = pd.read_csv(awards_file)
-        df_awards = preparar_awards_dataframe(df_awards)
-        st.session_state.df_catalogo = aplicar_awards_csv(st.session_state.df_catalogo, df_awards)
-        st.success("CSV de premios aplicado correctamente ✅")
-    except Exception as e:
-        st.error(f"Error al aplicar CSV de premios: {e}")
 
 if st.session_state.df_catalogo is not None:
     df = st.session_state.df_catalogo.copy()
@@ -713,10 +682,7 @@ if st.session_state.df_catalogo is not None:
             "director",
             "tmdb_cast",
             "tmdb_genres",
-            "oscar_wins",
-            "oscar_nominations",
-            "golden_globe_wins",
-            "golden_globe_nominations",
+            "awards_raw",
             "tmdb_overview_es",
             "tmdb_match"
         ] if col in df_filtrado.columns
@@ -724,10 +690,14 @@ if st.session_state.df_catalogo is not None:
 
     st.subheader("Resultados")
     st.write(f"Resultados encontrados: {len(df_filtrado)}")
+
+    num_rows = len(df_filtrado)
+    altura_tabla = min(80 + num_rows * 35, 600)
+
     st.dataframe(
         df_filtrado[columnas_mostrar],
         width=2400,
-        height=520
+        height=altura_tabla
     )
 
     csv_data = convertir_a_csv(df_filtrado[columnas_mostrar])
