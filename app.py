@@ -23,6 +23,8 @@ if "selected_type" not in st.session_state:
     st.session_state.selected_type = "Todos"
 if "selected_show_class" not in st.session_state:
     st.session_state.selected_show_class = "Todos"
+if "selected_country" not in st.session_state:
+    st.session_state.selected_country = "Todos"
 if "unique_titles" not in st.session_state:
     st.session_state.unique_titles = False
 if "only_tmdb" not in st.session_state:
@@ -34,6 +36,7 @@ def limpiar_filtros():
     st.session_state.search = ""
     st.session_state.selected_type = "Todos"
     st.session_state.selected_show_class = "Todos"
+    st.session_state.selected_country = "Todos"
     st.session_state.unique_titles = False
     st.session_state.only_tmdb = False
 
@@ -195,10 +198,7 @@ def clasificar_show(row):
 @st.cache_data(show_spinner=False)
 def buscar_omdb_awards_raw(title, year, object_type, api_key):
     if not api_key or not title:
-        return {
-            "awards_raw": None,
-            "omdb_match": False,
-        }
+        return {"awards_raw": None, "omdb_match": False}
 
     omdb_type = "movie" if object_type == "movie" else "series"
 
@@ -221,10 +221,7 @@ def buscar_omdb_awards_raw(title, year, object_type, api_key):
         data = response.json()
 
         if data.get("Response") != "True":
-            return {
-                "awards_raw": None,
-                "omdb_match": False,
-            }
+            return {"awards_raw": None, "omdb_match": False}
 
         return {
             "awards_raw": data.get("Awards"),
@@ -232,10 +229,7 @@ def buscar_omdb_awards_raw(title, year, object_type, api_key):
         }
 
     except Exception:
-        return {
-            "awards_raw": None,
-            "omdb_match": False,
-        }
+        return {"awards_raw": None, "omdb_match": False}
 
 # -------------------------
 # CARGA JSON
@@ -279,6 +273,8 @@ def preparar_dataframe(data):
         "tmdb_match": False,
         "tmdb_cast": None,
         "tmdb_genres": None,
+        "tmdb_countries": None,
+        "tmdb_country_codes": None,
         "tmdb_overview_es": None,
         "show_classification": None,
     }
@@ -310,6 +306,8 @@ def obtener_detalles_tmdb(tmdb_id, endpoint, api_key):
         return {
             "tmdb_cast": None,
             "tmdb_genres": None,
+            "tmdb_countries": None,
+            "tmdb_country_codes": None,
             "tmdb_overview_es": None,
         }
 
@@ -325,6 +323,28 @@ def obtener_detalles_tmdb(tmdb_id, endpoint, api_key):
 
     genres = details_data.get("genres", [])
     tmdb_genres = ", ".join([g["name"] for g in genres if "name" in g]) if genres else None
+
+    production_countries = details_data.get("production_countries", [])
+    country_names = []
+    country_codes = []
+
+    for c in production_countries:
+        name = c.get("name")
+        code = c.get("iso_3166_1")
+        if name:
+            country_names.append(name)
+        if code:
+            country_codes.append(code)
+
+    # Para series, TMDB a veces usa origin_country aunque production_countries venga vacío
+    if not country_codes and endpoint == "tv":
+        origin_country = details_data.get("origin_country", [])
+        if isinstance(origin_country, list):
+            country_codes.extend(origin_country)
+
+    tmdb_countries = ", ".join(sorted(set(country_names))) if country_names else None
+    tmdb_country_codes = ", ".join(sorted(set(country_codes))) if country_codes else None
+
     tmdb_overview_es = details_data.get("overview")
 
     credits_url = f"https://api.themoviedb.org/3/{endpoint}/{tmdb_id}/credits"
@@ -344,6 +364,8 @@ def obtener_detalles_tmdb(tmdb_id, endpoint, api_key):
     return {
         "tmdb_cast": tmdb_cast,
         "tmdb_genres": tmdb_genres,
+        "tmdb_countries": tmdb_countries,
+        "tmdb_country_codes": tmdb_country_codes,
         "tmdb_overview_es": tmdb_overview_es,
     }
 
@@ -381,6 +403,8 @@ def buscar_tmdb_movie(title, year, api_key):
         "tmdb_title_es": tmdb_title_es,
         "tmdb_cast": detalles["tmdb_cast"],
         "tmdb_genres": detalles["tmdb_genres"],
+        "tmdb_countries": detalles["tmdb_countries"],
+        "tmdb_country_codes": detalles["tmdb_country_codes"],
         "tmdb_overview_es": detalles["tmdb_overview_es"],
         "tmdb_match": True,
     }
@@ -446,6 +470,8 @@ def buscar_tmdb_tv(title, year, api_key):
         "tmdb_title_es": tmdb_title_es,
         "tmdb_cast": detalles["tmdb_cast"],
         "tmdb_genres": detalles["tmdb_genres"],
+        "tmdb_countries": detalles["tmdb_countries"],
+        "tmdb_country_codes": detalles["tmdb_country_codes"],
         "tmdb_overview_es": detalles["tmdb_overview_es"],
         "tmdb_match": True,
     }
@@ -491,6 +517,8 @@ def buscar_tmdb_multi(row, api_key):
         "tmdb_title_es": None,
         "tmdb_cast": None,
         "tmdb_genres": None,
+        "tmdb_countries": None,
+        "tmdb_country_codes": None,
         "tmdb_overview_es": None,
         "tmdb_match": False,
     }
@@ -498,7 +526,7 @@ def buscar_tmdb_multi(row, api_key):
 # -------------------------
 # FILTROS
 # -------------------------
-def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selected_show_class):
+def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selected_show_class, selected_country):
     df_filtrado = df.copy()
 
     if search:
@@ -516,6 +544,13 @@ def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selecte
     if selected_show_class != "Todos" and "show_classification" in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado["show_classification"] == selected_show_class]
 
+    if selected_country != "Todos" and "tmdb_countries" in df_filtrado.columns:
+        mask_country = (
+            df_filtrado["tmdb_countries"].astype(str).str.contains(selected_country, case=False, na=False)
+            | df_filtrado["tmdb_country_codes"].astype(str).str.contains(selected_country, case=False, na=False)
+        )
+        df_filtrado = df_filtrado[mask_country]
+
     if unique_titles:
         campo_unico = "title_display" if "title_display" in df_filtrado.columns else "original_title"
         df_filtrado = df_filtrado.drop_duplicates(subset=[campo_unico])
@@ -528,7 +563,7 @@ def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selecte
 # -------------------------
 # ENRIQUECER
 # -------------------------
-def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, selected_show_class, max_items=None):
+def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, selected_show_class, selected_country, max_items=None):
     df = df.copy()
 
     subset = aplicar_filtros(
@@ -537,7 +572,8 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         selected_type=selected_type,
         unique_titles=unique_titles,
         only_tmdb=False,
-        selected_show_class=selected_show_class
+        selected_show_class=selected_show_class,
+        selected_country=selected_country
     )
 
     subset = subset[subset["tmdb_match"] != True]
@@ -559,6 +595,8 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         df.at[idx, "tmdb_title_es"] = result["tmdb_title_es"]
         df.at[idx, "tmdb_cast"] = result["tmdb_cast"]
         df.at[idx, "tmdb_genres"] = result["tmdb_genres"]
+        df.at[idx, "tmdb_countries"] = result["tmdb_countries"]
+        df.at[idx, "tmdb_country_codes"] = result["tmdb_country_codes"]
         df.at[idx, "tmdb_overview_es"] = result["tmdb_overview_es"]
         df.at[idx, "tmdb_match"] = result["tmdb_match"]
 
@@ -637,6 +675,18 @@ if st.session_state.df_catalogo is not None:
     show_class_options = ["Todos", "ficcion", "programa", "dudoso"]
     selected_show_class = st.selectbox("Clasificación de shows", show_class_options, key="selected_show_class")
 
+    country_options = ["Todos"]
+    if "tmdb_countries" in df.columns:
+        countries = set()
+        for value in df["tmdb_countries"].dropna():
+            for c in str(value).split(","):
+                c = c.strip()
+                if c and c.lower() != "none":
+                    countries.add(c)
+        country_options += sorted(countries)
+
+    selected_country = st.selectbox("País TMDB", country_options, key="selected_country")
+
     unique_titles = st.checkbox("Mostrar solo títulos únicos", key="unique_titles")
     only_tmdb = st.checkbox("Mostrar solo títulos enriquecidos con TMDB", key="only_tmdb")
 
@@ -653,6 +703,7 @@ if st.session_state.df_catalogo is not None:
                         selected_type=selected_type,
                         unique_titles=unique_titles,
                         selected_show_class=selected_show_class,
+                        selected_country=selected_country,
                         max_items=None
                     )
                     st.session_state.df_catalogo = df_actualizado
@@ -667,7 +718,8 @@ if st.session_state.df_catalogo is not None:
         selected_type=selected_type,
         unique_titles=unique_titles,
         only_tmdb=only_tmdb,
-        selected_show_class=selected_show_class
+        selected_show_class=selected_show_class,
+        selected_country=selected_country
     )
 
     columnas_mostrar = [
@@ -682,6 +734,8 @@ if st.session_state.df_catalogo is not None:
             "director",
             "tmdb_cast",
             "tmdb_genres",
+            "tmdb_countries",
+            "tmdb_country_codes",
             "awards_raw",
             "tmdb_overview_es",
             "tmdb_match"
@@ -696,7 +750,7 @@ if st.session_state.df_catalogo is not None:
 
     st.dataframe(
         df_filtrado[columnas_mostrar],
-        width=2400,
+        width=2600,
         height=altura_tabla
     )
 
