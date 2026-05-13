@@ -29,6 +29,8 @@ if "unique_titles" not in st.session_state:
     st.session_state.unique_titles = False
 if "only_tmdb" not in st.session_state:
     st.session_state.only_tmdb = False
+if "only_movies" not in st.session_state:
+    st.session_state.only_movies = False
 if "df_catalogo" not in st.session_state:
     st.session_state.df_catalogo = None
 
@@ -39,6 +41,7 @@ def limpiar_filtros():
     st.session_state.selected_country = "Todos"
     st.session_state.unique_titles = False
     st.session_state.only_tmdb = False
+    st.session_state.only_movies = False
 
 # -------------------------
 # UTILIDADES
@@ -146,7 +149,12 @@ def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None):
             except Exception:
                 pass
 
-        score_total = score_titulo + score_year
+        # Pequeño bonus por popularidad/votos para desempatar resultados muy similares
+        vote_count = r.get("vote_count") or 0
+        popularity = r.get("popularity") or 0
+        score_popularidad = min(float(vote_count) / 100000, 0.05) + min(float(popularity) / 10000, 0.03)
+
+        score_total = score_titulo + score_year + score_popularidad
 
         if score_total > mejor_score:
             mejor_score = score_total
@@ -156,6 +164,25 @@ def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None):
         return None
 
     return mejor
+
+def deduplicar_para_ranking(df):
+    df_rank = df.copy()
+
+    if "title_display" in df_rank.columns:
+        campo_unico = "title_display"
+    elif "tmdb_title_es" in df_rank.columns:
+        campo_unico = "tmdb_title_es"
+    else:
+        campo_unico = "original_title"
+
+    df_rank = df_rank.sort_values(
+        by=["tmdb_vote_average", "tmdb_vote_count", "tmdb_popularity"],
+        ascending=[False, False, False],
+        na_position="last"
+    )
+
+    df_rank = df_rank.drop_duplicates(subset=[campo_unico])
+    return df_rank
 
 # -------------------------
 # CLASIFICACIÓN SHOWS
@@ -276,6 +303,9 @@ def preparar_dataframe(data):
         "tmdb_countries": None,
         "tmdb_country_codes": None,
         "tmdb_overview_es": None,
+        "tmdb_vote_average": None,
+        "tmdb_vote_count": None,
+        "tmdb_popularity": None,
         "show_classification": None,
     }
 
@@ -309,6 +339,9 @@ def obtener_detalles_tmdb(tmdb_id, endpoint, api_key):
             "tmdb_countries": None,
             "tmdb_country_codes": None,
             "tmdb_overview_es": None,
+            "tmdb_vote_average": None,
+            "tmdb_vote_count": None,
+            "tmdb_popularity": None,
         }
 
     details_url = f"https://api.themoviedb.org/3/{endpoint}/{tmdb_id}"
@@ -336,7 +369,6 @@ def obtener_detalles_tmdb(tmdb_id, endpoint, api_key):
         if code:
             country_codes.append(code)
 
-    # Para series, TMDB a veces usa origin_country aunque production_countries venga vacío
     if not country_codes and endpoint == "tv":
         origin_country = details_data.get("origin_country", [])
         if isinstance(origin_country, list):
@@ -346,6 +378,9 @@ def obtener_detalles_tmdb(tmdb_id, endpoint, api_key):
     tmdb_country_codes = ", ".join(sorted(set(country_codes))) if country_codes else None
 
     tmdb_overview_es = details_data.get("overview")
+    tmdb_vote_average = details_data.get("vote_average")
+    tmdb_vote_count = details_data.get("vote_count")
+    tmdb_popularity = details_data.get("popularity")
 
     credits_url = f"https://api.themoviedb.org/3/{endpoint}/{tmdb_id}/credits"
     credits_params = {
@@ -367,6 +402,9 @@ def obtener_detalles_tmdb(tmdb_id, endpoint, api_key):
         "tmdb_countries": tmdb_countries,
         "tmdb_country_codes": tmdb_country_codes,
         "tmdb_overview_es": tmdb_overview_es,
+        "tmdb_vote_average": tmdb_vote_average,
+        "tmdb_vote_count": tmdb_vote_count,
+        "tmdb_popularity": tmdb_popularity,
     }
 
 # -------------------------
@@ -406,6 +444,9 @@ def buscar_tmdb_movie(title, year, api_key):
         "tmdb_countries": detalles["tmdb_countries"],
         "tmdb_country_codes": detalles["tmdb_country_codes"],
         "tmdb_overview_es": detalles["tmdb_overview_es"],
+        "tmdb_vote_average": detalles["tmdb_vote_average"],
+        "tmdb_vote_count": detalles["tmdb_vote_count"],
+        "tmdb_popularity": detalles["tmdb_popularity"],
         "tmdb_match": True,
     }
 
@@ -473,6 +514,9 @@ def buscar_tmdb_tv(title, year, api_key):
         "tmdb_countries": detalles["tmdb_countries"],
         "tmdb_country_codes": detalles["tmdb_country_codes"],
         "tmdb_overview_es": detalles["tmdb_overview_es"],
+        "tmdb_vote_average": detalles["tmdb_vote_average"],
+        "tmdb_vote_count": detalles["tmdb_vote_count"],
+        "tmdb_popularity": detalles["tmdb_popularity"],
         "tmdb_match": True,
     }
 
@@ -520,13 +564,16 @@ def buscar_tmdb_multi(row, api_key):
         "tmdb_countries": None,
         "tmdb_country_codes": None,
         "tmdb_overview_es": None,
+        "tmdb_vote_average": None,
+        "tmdb_vote_count": None,
+        "tmdb_popularity": None,
         "tmdb_match": False,
     }
 
 # -------------------------
 # FILTROS
 # -------------------------
-def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selected_show_class, selected_country):
+def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selected_show_class, selected_country, only_movies=False):
     df_filtrado = df.copy()
 
     if search:
@@ -540,6 +587,9 @@ def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selecte
 
     if selected_type != "Todos" and "object_type" in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado["object_type"] == selected_type]
+
+    if only_movies and "object_type" in df_filtrado.columns:
+        df_filtrado = df_filtrado[df_filtrado["object_type"] == "movie"]
 
     if selected_show_class != "Todos" and "show_classification" in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado["show_classification"] == selected_show_class]
@@ -563,7 +613,7 @@ def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selecte
 # -------------------------
 # ENRIQUECER
 # -------------------------
-def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, selected_show_class, selected_country, max_items=None):
+def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, selected_show_class, selected_country, only_movies=False, max_items=None):
     df = df.copy()
 
     subset = aplicar_filtros(
@@ -573,7 +623,8 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         unique_titles=unique_titles,
         only_tmdb=False,
         selected_show_class=selected_show_class,
-        selected_country=selected_country
+        selected_country=selected_country,
+        only_movies=only_movies
     )
 
     subset = subset[subset["tmdb_match"] != True]
@@ -598,6 +649,9 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         df.at[idx, "tmdb_countries"] = result["tmdb_countries"]
         df.at[idx, "tmdb_country_codes"] = result["tmdb_country_codes"]
         df.at[idx, "tmdb_overview_es"] = result["tmdb_overview_es"]
+        df.at[idx, "tmdb_vote_average"] = result["tmdb_vote_average"]
+        df.at[idx, "tmdb_vote_count"] = result["tmdb_vote_count"]
+        df.at[idx, "tmdb_popularity"] = result["tmdb_popularity"]
         df.at[idx, "tmdb_match"] = result["tmdb_match"]
 
         awards_result = buscar_omdb_awards_raw(
@@ -614,6 +668,10 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         time.sleep(0.03)
 
     df["title_display"] = df["tmdb_title_es"].fillna(df["title_final"])
+
+    for col in ["tmdb_vote_average", "tmdb_vote_count", "tmdb_popularity"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if "object_type" in df.columns:
         mask_show = df["object_type"] == "show"
@@ -656,6 +714,10 @@ with top3:
 if st.session_state.df_catalogo is not None:
     df = st.session_state.df_catalogo.copy()
 
+    for col in ["tmdb_vote_average", "tmdb_vote_count", "tmdb_popularity"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
     if "object_type" in df.columns:
         mask_show = df["object_type"] == "show"
         df.loc[mask_show, "show_classification"] = df.loc[mask_show].apply(clasificar_show, axis=1)
@@ -689,6 +751,7 @@ if st.session_state.df_catalogo is not None:
 
     unique_titles = st.checkbox("Mostrar solo títulos únicos", key="unique_titles")
     only_tmdb = st.checkbox("Mostrar solo títulos enriquecidos con TMDB", key="only_tmdb")
+    only_movies = st.checkbox("Mostrar solo películas", key="only_movies")
 
     with top2:
         if st.button("Enriquecer filtro actual con TMDB"):
@@ -704,6 +767,7 @@ if st.session_state.df_catalogo is not None:
                         unique_titles=unique_titles,
                         selected_show_class=selected_show_class,
                         selected_country=selected_country,
+                        only_movies=only_movies,
                         max_items=None
                     )
                     st.session_state.df_catalogo = df_actualizado
@@ -719,7 +783,8 @@ if st.session_state.df_catalogo is not None:
         unique_titles=unique_titles,
         only_tmdb=only_tmdb,
         selected_show_class=selected_show_class,
-        selected_country=selected_country
+        selected_country=selected_country,
+        only_movies=only_movies
     )
 
     columnas_mostrar = [
@@ -732,6 +797,9 @@ if st.session_state.df_catalogo is not None:
             "release_year",
             "runtime",
             "director",
+            "tmdb_vote_average",
+            "tmdb_vote_count",
+            "tmdb_popularity",
             "tmdb_cast",
             "tmdb_genres",
             "tmdb_countries",
@@ -760,5 +828,64 @@ if st.session_state.df_catalogo is not None:
         label="⬇️ Descargar resultados filtrados en CSV",
         data=csv_data,
         file_name="catalogo_filtrado_enriquecido.csv",
+        mime="text/csv"
+    )
+
+    # -------------------------
+    # TOP 50 TMDB
+    # -------------------------
+    st.subheader("🏆 Top 50 por nota TMDB")
+
+    df_top_base = df_filtrado.copy()
+
+    if "object_type" in df_top_base.columns:
+        df_top_base = df_top_base[df_top_base["object_type"] == "movie"]
+
+    if "tmdb_match" in df_top_base.columns:
+        df_top_base = df_top_base[df_top_base["tmdb_match"] == True]
+
+    for col in ["tmdb_vote_average", "tmdb_vote_count", "tmdb_popularity"]:
+        if col in df_top_base.columns:
+            df_top_base[col] = pd.to_numeric(df_top_base[col], errors="coerce")
+
+    df_top_base = df_top_base.dropna(subset=["tmdb_vote_average"])
+    df_top_base = df_top_base[df_top_base["tmdb_vote_count"].fillna(0) > 0]
+
+    df_top_base = deduplicar_para_ranking(df_top_base)
+
+    df_top50 = df_top_base.sort_values(
+        by=["tmdb_vote_average", "tmdb_vote_count", "tmdb_popularity"],
+        ascending=[False, False, False],
+        na_position="last"
+    ).head(50)
+
+    columnas_top50 = [
+        col for col in [
+            "title_display",
+            "original_title",
+            "release_year",
+            "tmdb_vote_average",
+            "tmdb_vote_count",
+            "tmdb_popularity",
+            "tmdb_genres",
+            "tmdb_countries",
+            "director",
+            "awards_raw",
+            "tmdb_overview_es"
+        ] if col in df_top50.columns
+    ]
+
+    st.write(f"Películas disponibles para ranking TMDB: {len(df_top_base)}")
+
+    st.dataframe(
+        df_top50[columnas_top50],
+        width=2200,
+        height=min(80 + len(df_top50) * 35, 600)
+    )
+
+    st.download_button(
+        label="⬇️ Descargar Top 50 TMDB en CSV",
+        data=convertir_a_csv(df_top50[columnas_top50]),
+        file_name="top_50_tmdb.csv",
         mime="text/csv"
     )
