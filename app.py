@@ -320,24 +320,25 @@ def preparar_dataframe(data):
         if col not in df.columns:
             df[col] = default_value
 
-    columnas_omdb = {
-        columnas_cannes = {
-        "cannes_match": False,
-        "cannes_awards": None,
-        "cannes_events": None,
-        "cannes_years": None,
-    }
+columnas_omdb = {
+    "awards_raw": None,
+    "omdb_match": False,
+}
 
-    for col, default_value in columnas_cannes.items():
-        if col not in df.columns:
-            df[col] = default_value
-        "awards_raw": None,
-        "omdb_match": False,
-    }
+for col, default_value in columnas_omdb.items():
+    if col not in df.columns:
+        df[col] = default_value
 
-    for col, default_value in columnas_omdb.items():
-        if col not in df.columns:
-            df[col] = default_value
+columnas_cannes = {
+    "cannes_match": False,
+    "cannes_awards": None,
+    "cannes_events": None,
+    "cannes_years": None,
+}
+
+for col, default_value in columnas_cannes.items():
+    if col not in df.columns:
+        df[col] = default_value
 
     if "title_display" not in df.columns:
         df["title_display"] = df["title_final"]
