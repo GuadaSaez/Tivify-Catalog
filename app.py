@@ -31,8 +31,11 @@ if "only_tmdb" not in st.session_state:
     st.session_state.only_tmdb = False
 if "only_movies" not in st.session_state:
     st.session_state.only_movies = False
+if "only_cannes" not in st.session_state:
+    st.session_state.only_cannes = False
 if "df_catalogo" not in st.session_state:
     st.session_state.df_catalogo = None
+
 
 def limpiar_filtros():
     st.session_state.search = ""
@@ -42,6 +45,8 @@ def limpiar_filtros():
     st.session_state.unique_titles = False
     st.session_state.only_tmdb = False
     st.session_state.only_movies = False
+    st.session_state.only_cannes = False
+
 
 # -------------------------
 # UTILIDADES
@@ -55,12 +60,14 @@ def normalizar_titulo(texto):
     texto = re.sub(r"\s+", " ", texto).strip()
     return texto
 
+
 def similitud_titulo(a, b):
     a_norm = normalizar_titulo(a)
     b_norm = normalizar_titulo(b)
     if not a_norm or not b_norm:
         return 0
     return SequenceMatcher(None, a_norm, b_norm).ratio()
+
 
 def get_spanish_title(x):
     if isinstance(x, dict):
@@ -69,6 +76,7 @@ def get_spanish_title(x):
                 return x[key]
     return None
 
+
 def crew_to_json(x):
     try:
         if isinstance(x, (list, dict)):
@@ -76,6 +84,7 @@ def crew_to_json(x):
         return str(x) if x is not None else None
     except Exception:
         return None
+
 
 def extraer_director(x):
     if not isinstance(x, list):
@@ -109,6 +118,7 @@ def extraer_director(x):
         return ", ".join(sorted(set(directores)))
 
     return None
+
 
 def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None):
     if not results:
@@ -149,7 +159,6 @@ def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None):
             except Exception:
                 pass
 
-        # Pequeño bonus por popularidad/votos para desempatar resultados muy similares
         vote_count = r.get("vote_count") or 0
         popularity = r.get("popularity") or 0
         score_popularidad = min(float(vote_count) / 100000, 0.05) + min(float(popularity) / 10000, 0.03)
@@ -164,6 +173,7 @@ def elegir_mejor_resultado_tmdb(results, query_title, expected_year=None):
         return None
 
     return mejor
+
 
 def deduplicar_para_ranking(df):
     df_rank = df.copy()
@@ -184,6 +194,7 @@ def deduplicar_para_ranking(df):
     df_rank = df_rank.drop_duplicates(subset=[campo_unico])
     return df_rank
 
+
 # -------------------------
 # CLASIFICACIÓN SHOWS
 # -------------------------
@@ -197,6 +208,7 @@ GENRES_FICTION = {
 GENRES_PROGRAM = {
     "Documental", "Documentary", "News", "Reality", "Talk", "Soap"
 }
+
 
 def clasificar_show(row):
     if row.get("object_type") != "show":
@@ -219,13 +231,12 @@ def clasificar_show(row):
 
     return "dudoso"
 
+
 # -------------------------
 # OMDB AWARDS RAW
 # -------------------------
-
 @st.cache_data(show_spinner=False)
 def buscar_omdb_awards_raw(title, year, object_type, api_key):
-
     if not api_key or not title:
         return {"awards_raw": None, "omdb_match": False}
 
@@ -250,9 +261,7 @@ def buscar_omdb_awards_raw(title, year, object_type, api_key):
             params=params,
             timeout=30
         )
-
         response.raise_for_status()
-
         data = response.json()
 
         if data.get("Response") != "True":
@@ -266,6 +275,110 @@ def buscar_omdb_awards_raw(title, year, object_type, api_key):
     except Exception:
         return {"awards_raw": None, "omdb_match": False}
 
+
+# -------------------------
+# WIKIDATA CANNES
+# -------------------------
+@st.cache_data(show_spinner=False)
+def buscar_cannes_wikidata(title, year):
+    if not title:
+        return {
+            "cannes_match": False,
+            "cannes_awards": None,
+            "cannes_events": None,
+            "cannes_years": None,
+        }
+
+    title_escaped = str(title).replace('"', '\\"')
+
+    year_filter = ""
+    if pd.notna(year):
+        try:
+            year_int = int(year)
+            year_filter = f"""
+            OPTIONAL {{ ?film wdt:P577 ?releaseDate. }}
+            FILTER(!BOUND(?releaseDate) || YEAR(?releaseDate) = {year_int} || YEAR(?releaseDate) = {year_int - 1} || YEAR(?releaseDate) = {year_int + 1})
+            """
+        except Exception:
+            year_filter = ""
+
+    query = f"""
+    SELECT ?film ?filmLabel ?awardLabel ?eventLabel ?pointInTime WHERE {{
+      ?film rdfs:label "{title_escaped}"@en.
+      ?film wdt:P31/wdt:P279* wd:Q11424.
+
+      {year_filter}
+
+      OPTIONAL {{ ?film wdt:P166 ?award. }}
+      OPTIONAL {{ ?award rdfs:label ?awardLabel FILTER(LANG(?awardLabel)="en") }}
+
+      OPTIONAL {{ ?film wdt:P1344 ?event. }}
+      OPTIONAL {{ ?event rdfs:label ?eventLabel FILTER(LANG(?eventLabel)="en") }}
+
+      OPTIONAL {{ ?film wdt:P585 ?pointInTime. }}
+
+      SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en,es". }}
+
+      FILTER(
+        CONTAINS(LCASE(STR(?awardLabel)), "cannes") ||
+        CONTAINS(LCASE(STR(?eventLabel)), "cannes")
+      )
+    }}
+    """
+
+    params = {
+        "query": query,
+        "format": "json"
+    }
+
+    try:
+        response = requests.get(
+            "https://query.wikidata.org/sparql",
+            params=params,
+            timeout=30,
+            headers={"User-Agent": "TivifyCatalogApp/1.0"}
+        )
+        response.raise_for_status()
+        data = response.json()
+        rows = data.get("results", {}).get("bindings", [])
+
+        if not rows:
+            return {
+                "cannes_match": False,
+                "cannes_awards": None,
+                "cannes_events": None,
+                "cannes_years": None,
+            }
+
+        awards = []
+        events = []
+        years = []
+
+        for row in rows:
+            if "awardLabel" in row:
+                awards.append(row["awardLabel"]["value"])
+            if "eventLabel" in row:
+                events.append(row["eventLabel"]["value"])
+            if "pointInTime" in row:
+                years.append(row["pointInTime"]["value"][:4])
+
+        return {
+            "cannes_match": True,
+            "cannes_awards": ", ".join(sorted(set(awards))) if awards else None,
+            "cannes_events": ", ".join(sorted(set(events))) if events else None,
+            "cannes_years": ", ".join(sorted(set(years))) if years else None,
+        }
+
+    except Exception:
+        return {
+            "cannes_match": False,
+            "cannes_awards": None,
+            "cannes_events": None,
+            "cannes_years": None,
+        }
+
+
+# -------------------------
 # CARGA JSON
 # -------------------------
 @st.cache_data
@@ -273,6 +386,7 @@ def cargar_json(url):
     response = requests.get(url, timeout=60)
     response.raise_for_status()
     return response.json()
+
 
 def preparar_dataframe(data):
     contents = data.get("contents", [])
@@ -320,30 +434,31 @@ def preparar_dataframe(data):
         if col not in df.columns:
             df[col] = default_value
 
-columnas_omdb = {
-    "awards_raw": None,
-    "omdb_match": False,
-}
+    columnas_omdb = {
+        "awards_raw": None,
+        "omdb_match": False,
+    }
 
-for col, default_value in columnas_omdb.items():
-    if col not in df.columns:
-        df[col] = default_value
+    for col, default_value in columnas_omdb.items():
+        if col not in df.columns:
+            df[col] = default_value
 
-columnas_cannes = {
-    "cannes_match": False,
-    "cannes_awards": None,
-    "cannes_events": None,
-    "cannes_years": None,
-}
+    columnas_cannes = {
+        "cannes_match": False,
+        "cannes_awards": None,
+        "cannes_events": None,
+        "cannes_years": None,
+    }
 
-for col, default_value in columnas_cannes.items():
-    if col not in df.columns:
-        df[col] = default_value
+    for col, default_value in columnas_cannes.items():
+        if col not in df.columns:
+            df[col] = default_value
 
     if "title_display" not in df.columns:
         df["title_display"] = df["title_final"]
 
     return df
+
 
 # -------------------------
 # TMDB DETALLES
@@ -425,6 +540,7 @@ def obtener_detalles_tmdb(tmdb_id, endpoint, api_key):
         "tmdb_popularity": tmdb_popularity,
     }
 
+
 # -------------------------
 # TMDB MOVIES
 # -------------------------
@@ -467,6 +583,7 @@ def buscar_tmdb_movie(title, year, api_key):
         "tmdb_popularity": detalles["tmdb_popularity"],
         "tmdb_match": True,
     }
+
 
 # -------------------------
 # TMDB SERIES
@@ -538,6 +655,7 @@ def buscar_tmdb_tv(title, year, api_key):
         "tmdb_match": True,
     }
 
+
 # -------------------------
 # BÚSQUEDA MULTI TMDB
 # -------------------------
@@ -588,10 +706,11 @@ def buscar_tmdb_multi(row, api_key):
         "tmdb_match": False,
     }
 
+
 # -------------------------
 # FILTROS
 # -------------------------
-def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selected_show_class, selected_country, only_movies=False):
+def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selected_show_class, selected_country, only_movies=False, only_cannes=False):
     df_filtrado = df.copy()
 
     if search:
@@ -619,6 +738,9 @@ def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selecte
         )
         df_filtrado = df_filtrado[mask_country]
 
+    if only_cannes and "cannes_match" in df_filtrado.columns:
+        df_filtrado = df_filtrado[df_filtrado["cannes_match"] == True]
+
     if unique_titles:
         campo_unico = "title_display" if "title_display" in df_filtrado.columns else "original_title"
         df_filtrado = df_filtrado.drop_duplicates(subset=[campo_unico])
@@ -628,10 +750,11 @@ def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selecte
 
     return df_filtrado
 
+
 # -------------------------
 # ENRIQUECER
 # -------------------------
-def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, selected_show_class, selected_country, only_movies=False, max_items=None):
+def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, selected_show_class, selected_country, only_movies=False, only_cannes=False, max_items=None):
     df = df.copy()
 
     subset = aplicar_filtros(
@@ -642,7 +765,8 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         only_tmdb=False,
         selected_show_class=selected_show_class,
         selected_country=selected_country,
-        only_movies=only_movies
+        only_movies=only_movies,
+        only_cannes=only_cannes
     )
 
     subset = subset[subset["tmdb_match"] != True]
@@ -655,7 +779,7 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
     if total == 0:
         return df, 0
 
-    progress = st.progress(0, text="Enriqueciendo filtro con TMDB...")
+    progress = st.progress(0, text="Enriqueciendo filtro con TMDB, OMDb y Cannes...")
 
     for i, (idx, row) in enumerate(subset.iterrows(), start=1):
         result = buscar_tmdb_multi(row, api_key)
@@ -673,15 +797,6 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         df.at[idx, "tmdb_match"] = result["tmdb_match"]
 
         awards_result = buscar_omdb_awards_raw(
-                cannes_result = buscar_cannes_wikidata(
-            row.get("original_title"),
-            row.get("release_year")
-        )
-
-        df.at[idx, "cannes_match"] = cannes_result["cannes_match"]
-        df.at[idx, "cannes_awards"] = cannes_result["cannes_awards"]
-        df.at[idx, "cannes_events"] = cannes_result["cannes_events"]
-        df.at[idx, "cannes_years"] = cannes_result["cannes_years"]
             row.get("original_title"),
             row.get("release_year"),
             row.get("object_type"),
@@ -691,7 +806,17 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         df.at[idx, "awards_raw"] = awards_result["awards_raw"]
         df.at[idx, "omdb_match"] = awards_result["omdb_match"]
 
-        progress.progress(i / total, text=f"Enriqueciendo filtro con TMDB... {i}/{total}")
+        cannes_result = buscar_cannes_wikidata(
+            row.get("original_title"),
+            row.get("release_year")
+        )
+
+        df.at[idx, "cannes_match"] = cannes_result["cannes_match"]
+        df.at[idx, "cannes_awards"] = cannes_result["cannes_awards"]
+        df.at[idx, "cannes_events"] = cannes_result["cannes_events"]
+        df.at[idx, "cannes_years"] = cannes_result["cannes_years"]
+
+        progress.progress(i / total, text=f"Enriqueciendo filtro con TMDB, OMDb y Cannes... {i}/{total}")
         time.sleep(0.03)
 
     df["title_display"] = df["tmdb_title_es"].fillna(df["title_final"])
@@ -706,8 +831,10 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
 
     return df, total
 
+
 def convertir_a_csv(df):
     return df.to_csv(index=False).encode("utf-8-sig")
+
 
 # -------------------------
 # UI
@@ -779,6 +906,7 @@ if st.session_state.df_catalogo is not None:
     unique_titles = st.checkbox("Mostrar solo títulos únicos", key="unique_titles")
     only_tmdb = st.checkbox("Mostrar solo títulos enriquecidos con TMDB", key="only_tmdb")
     only_movies = st.checkbox("Mostrar solo películas", key="only_movies")
+    only_cannes = st.checkbox("Mostrar solo títulos con Cannes", key="only_cannes")
 
     with top2:
         if st.button("Enriquecer filtro actual con TMDB"):
@@ -795,11 +923,12 @@ if st.session_state.df_catalogo is not None:
                         selected_show_class=selected_show_class,
                         selected_country=selected_country,
                         only_movies=only_movies,
+                        only_cannes=only_cannes,
                         max_items=None
                     )
                     st.session_state.df_catalogo = df_actualizado
                     df = df_actualizado
-                    st.success(f"Filtro enriquecido con TMDB ✅ ({n_enriquecidos} títulos procesados)")
+                    st.success(f"Filtro enriquecido con TMDB, OMDb y Cannes ✅ ({n_enriquecidos} títulos procesados)")
                 except Exception as e:
                     st.error(f"Error al enriquecer el filtro: {e}")
 
@@ -811,7 +940,8 @@ if st.session_state.df_catalogo is not None:
         only_tmdb=only_tmdb,
         selected_show_class=selected_show_class,
         selected_country=selected_country,
-        only_movies=only_movies
+        only_movies=only_movies,
+        only_cannes=only_cannes
     )
 
     columnas_mostrar = [
@@ -832,7 +962,7 @@ if st.session_state.df_catalogo is not None:
             "tmdb_countries",
             "tmdb_country_codes",
             "awards_raw",
-                        "cannes_match",
+            "cannes_match",
             "cannes_awards",
             "cannes_events",
             "cannes_years",
@@ -849,7 +979,7 @@ if st.session_state.df_catalogo is not None:
 
     st.dataframe(
         df_filtrado[columnas_mostrar],
-        width=2600,
+        width=2800,
         height=altura_tabla
     )
 
@@ -902,6 +1032,10 @@ if st.session_state.df_catalogo is not None:
             "tmdb_countries",
             "director",
             "awards_raw",
+            "cannes_match",
+            "cannes_awards",
+            "cannes_events",
+            "cannes_years",
             "tmdb_overview_es"
         ] if col in df_top50.columns
     ]
@@ -910,7 +1044,7 @@ if st.session_state.df_catalogo is not None:
 
     st.dataframe(
         df_top50[columnas_top50],
-        width=2200,
+        width=2400,
         height=min(80 + len(df_top50) * 35, 600)
     )
 
