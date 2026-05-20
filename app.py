@@ -1039,9 +1039,8 @@ with top2:
             )
 
             df = st.session_state.df_catalogo
-
     df_filtrado = aplicar_filtros(
-        df,
+        df=df,
         search=search,
         selected_type=selected_type,
         unique_titles=unique_titles,
@@ -1078,7 +1077,6 @@ with top2:
             "tmdb_match"
         ] if col in df_filtrado.columns
     ]
-
     st.subheader("Resultados")
     st.write(f"Resultados encontrados: {len(df_filtrado)}")
 
