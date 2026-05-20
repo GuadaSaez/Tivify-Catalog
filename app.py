@@ -222,7 +222,99 @@ def clasificar_show(row):
 # -------------------------
 # OMDB AWARDS RAW
 # -------------------------
+# -------------------------
+# WIKIDATA CANNES
+# -------------------------
 @st.cache_data(show_spinner=False)
+def buscar_cannes_wikidata(title, year):
+
+    if not title:
+        return {
+            "cannes_match": False,
+            "cannes_awards": None,
+            "cannes_events": None,
+            "cannes_years": None,
+        }
+
+    query = f"""
+    SELECT ?film ?filmLabel ?awardLabel ?eventLabel ?date WHERE {{
+      ?film rdfs:label "{title}"@en.
+      ?film wdt:P31/wdt:P279* wd:Q11424.
+
+      OPTIONAL {{ ?film wdt:P166 ?award. }}
+      OPTIONAL {{ ?award rdfs:label ?awardLabel FILTER(LANG(?awardLabel)="en") }}
+
+      OPTIONAL {{ ?film wdt:P1344 ?event. }}
+      OPTIONAL {{ ?event rdfs:label ?eventLabel FILTER(LANG(?eventLabel)="en") }}
+
+      OPTIONAL {{ ?film wdt:P585 ?date. }}
+
+      SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en,es". }}
+
+      FILTER(
+        CONTAINS(LCASE(STR(?awardLabel)), "cannes") ||
+        CONTAINS(LCASE(STR(?eventLabel)), "cannes")
+      )
+    }}
+    """
+
+    params = {
+        "query": query,
+        "format": "json"
+    }
+
+    try:
+        response = requests.get(
+            "https://query.wikidata.org/sparql",
+            params=params,
+            timeout=30,
+            headers={"User-Agent": "TivifyCatalogApp/1.0"}
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        rows = data.get("results", {}).get("bindings", [])
+
+        if not rows:
+            return {
+                "cannes_match": False,
+                "cannes_awards": None,
+                "cannes_events": None,
+                "cannes_years": None,
+            }
+
+        awards = []
+        events = []
+        years = []
+
+        for row in rows:
+
+            if "awardLabel" in row:
+                awards.append(row["awardLabel"]["value"])
+
+            if "eventLabel" in row:
+                events.append(row["eventLabel"]["value"])
+
+            if "date" in row:
+                years.append(row["date"]["value"][:4])
+
+        return {
+            "cannes_match": True,
+            "cannes_awards": ", ".join(sorted(set(awards))) if awards else None,
+            "cannes_events": ", ".join(sorted(set(events))) if events else None,
+            "cannes_years": ", ".join(sorted(set(years))) if years else None,
+        }
+
+    except Exception:
+        return {
+            "cannes_match": False,
+            "cannes_awards": None,
+            "cannes_events": None,
+            "cannes_years": None,
+        }
+        @st.cache_data(show_spinner=False)
 def buscar_omdb_awards_raw(title, year, object_type, api_key):
     if not api_key or not title:
         return {"awards_raw": None, "omdb_match": False}
@@ -314,6 +406,16 @@ def preparar_dataframe(data):
             df[col] = default_value
 
     columnas_omdb = {
+        columnas_cannes = {
+        "cannes_match": False,
+        "cannes_awards": None,
+        "cannes_events": None,
+        "cannes_years": None,
+    }
+
+    for col, default_value in columnas_cannes.items():
+        if col not in df.columns:
+            df[col] = default_value
         "awards_raw": None,
         "omdb_match": False,
     }
@@ -655,6 +757,15 @@ def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, 
         df.at[idx, "tmdb_match"] = result["tmdb_match"]
 
         awards_result = buscar_omdb_awards_raw(
+                cannes_result = buscar_cannes_wikidata(
+            row.get("original_title"),
+            row.get("release_year")
+        )
+
+        df.at[idx, "cannes_match"] = cannes_result["cannes_match"]
+        df.at[idx, "cannes_awards"] = cannes_result["cannes_awards"]
+        df.at[idx, "cannes_events"] = cannes_result["cannes_events"]
+        df.at[idx, "cannes_years"] = cannes_result["cannes_years"]
             row.get("original_title"),
             row.get("release_year"),
             row.get("object_type"),
@@ -805,6 +916,10 @@ if st.session_state.df_catalogo is not None:
             "tmdb_countries",
             "tmdb_country_codes",
             "awards_raw",
+                        "cannes_match",
+            "cannes_awards",
+            "cannes_events",
+            "cannes_years",
             "tmdb_overview_es",
             "tmdb_match"
         ] if col in df_filtrado.columns
