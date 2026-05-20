@@ -935,7 +935,14 @@ if st.session_state.df_catalogo is not None:
     only_cannes = st.checkbox("Mostrar solo títulos con Cannes", key="only_cannes")
 
     with top2:
-        if st.button("Enriquecer filtro actual con TMDB"):
+        col_enrich1, col_enrich2 = st.columns(2)
+
+        with col_enrich1:
+            enrich_base = st.button("Enriquecer metadata base")
+
+        with col_enrich2:
+            enrich_cannes = st.button("Enriquecer Cannes")
+            
             if not TMDB_API_KEY:
                 st.error("No se ha encontrado la API key de TMDB en secrets.toml")
             else:
