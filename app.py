@@ -316,7 +316,7 @@ def buscar_cannes_wikidata(title, year):
         }
         @st.cache_data(show_spinner=False)
 def buscar_omdb_awards_raw(title, year, object_type, api_key):
-    if not api_key or not title:
+if not api_key or not title:
         return {"awards_raw": None, "omdb_match": False}
 
     omdb_type = "movie" if object_type == "movie" else "series"
