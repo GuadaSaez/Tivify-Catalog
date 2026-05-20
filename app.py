@@ -768,7 +768,6 @@ subset = aplicar_filtros(
     only_movies=only_movies,
     only_cannes=False
 )
-
     subset = subset[subset["tmdb_match"] != True]
 
     if max_items is not None:
