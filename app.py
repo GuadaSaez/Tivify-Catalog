@@ -752,7 +752,7 @@ def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selecte
 
 
 # -------------------------
-# ENRIQUECER
+# ENRIQUECER METADATA BASE
 # -------------------------
 def enriquecer_filtro_actual(
     df,
@@ -769,6 +769,8 @@ def enriquecer_filtro_actual(
 
     df = df.copy()
 
+    # Importante: para enriquecer metadata base NO filtramos por Cannes.
+    # Cannes se enriquece con su propio botón.
     subset = aplicar_filtros(
         df,
         search=search,
@@ -793,7 +795,7 @@ def enriquecer_filtro_actual(
 
     progress = st.progress(
         0,
-        text="Enriqueciendo filtro con TMDB, OMDb y Cannes..."
+        text="Enriqueciendo metadata base..."
     )
 
     for i, (idx, row) in enumerate(subset.iterrows(), start=1):
@@ -822,19 +824,9 @@ def enriquecer_filtro_actual(
         df.at[idx, "awards_raw"] = awards_result["awards_raw"]
         df.at[idx, "omdb_match"] = awards_result["omdb_match"]
 
-        cannes_result = buscar_cannes_wikidata(
-            row.get("original_title"),
-            row.get("release_year")
-        )
-
-        df.at[idx, "cannes_match"] = cannes_result["cannes_match"]
-        df.at[idx, "cannes_awards"] = cannes_result["cannes_awards"]
-        df.at[idx, "cannes_events"] = cannes_result["cannes_events"]
-        df.at[idx, "cannes_years"] = cannes_result["cannes_years"]
-
         progress.progress(
             i / total,
-            text=f"Enriqueciendo filtro con TMDB, OMDb y Cannes... {i}/{total}"
+            text=f"Enriqueciendo metadata base... {i}/{total}"
         )
 
         time.sleep(0.03)
@@ -854,6 +846,71 @@ def enriquecer_filtro_actual(
         df.loc[mask_show, "show_classification"] = df.loc[
             mask_show
         ].apply(clasificar_show, axis=1)
+
+    return df, total
+
+
+# -------------------------
+# ENRIQUECER CANNES
+# -------------------------
+def enriquecer_cannes_filtro_actual(
+    df,
+    search,
+    selected_type,
+    unique_titles,
+    selected_show_class,
+    selected_country,
+    only_movies=True,
+    max_items=None
+):
+
+    df = df.copy()
+
+    subset = aplicar_filtros(
+        df,
+        search=search,
+        selected_type=selected_type,
+        unique_titles=unique_titles,
+        only_tmdb=False,
+        selected_show_class=selected_show_class,
+        selected_country=selected_country,
+        only_movies=only_movies,
+        only_cannes=False
+    )
+
+    subset = subset[subset["cannes_match"] != True]
+
+    if max_items is not None:
+        subset = subset.head(max_items)
+
+    total = len(subset)
+
+    if total == 0:
+        return df, 0
+
+    progress = st.progress(
+        0,
+        text="Enriqueciendo Cannes..."
+    )
+
+    for i, (idx, row) in enumerate(subset.iterrows(), start=1):
+
+        cannes_result = buscar_cannes_wikidata(
+            row.get("original_title"),
+            row.get("release_year")
+        )
+
+        df.at[idx, "cannes_match"] = cannes_result["cannes_match"]
+        df.at[idx, "cannes_awards"] = cannes_result["cannes_awards"]
+        df.at[idx, "cannes_events"] = cannes_result["cannes_events"]
+        df.at[idx, "cannes_years"] = cannes_result["cannes_years"]
+
+        progress.progress(
+            i / total,
+            text=f"Enriqueciendo Cannes... {i}/{total}"
+        )
+
+        time.sleep(0.03)
 
     return df, total
 
@@ -892,6 +949,7 @@ with top3:
         st.rerun()
 
 if st.session_state.df_catalogo is not None:
+
     df = st.session_state.df_catalogo.copy()
 
     for col in ["tmdb_vote_average", "tmdb_vote_count", "tmdb_popularity"]:
@@ -912,10 +970,18 @@ if st.session_state.df_catalogo is not None:
     if "object_type" in df.columns:
         object_types = sorted(df["object_type"].dropna().unique().tolist())
 
-    selected_type = st.selectbox("Tipo de contenido", ["Todos"] + object_types, key="selected_type")
+    selected_type = st.selectbox(
+        "Tipo de contenido",
+        ["Todos"] + object_types,
+        key="selected_type"
+    )
 
     show_class_options = ["Todos", "ficcion", "programa", "dudoso"]
-    selected_show_class = st.selectbox("Clasificación de shows", show_class_options, key="selected_show_class")
+    selected_show_class = st.selectbox(
+        "Clasificación de shows",
+        show_class_options,
+        key="selected_show_class"
+    )
 
     country_options = ["Todos"]
     if "tmdb_countries" in df.columns:
@@ -927,45 +993,68 @@ if st.session_state.df_catalogo is not None:
                     countries.add(c)
         country_options += sorted(countries)
 
-    selected_country = st.selectbox("País TMDB", country_options, key="selected_country")
+    selected_country = st.selectbox(
+        "País TMDB",
+        country_options,
+        key="selected_country"
+    )
 
     unique_titles = st.checkbox("Mostrar solo títulos únicos", key="unique_titles")
     only_tmdb = st.checkbox("Mostrar solo títulos enriquecidos con TMDB", key="only_tmdb")
     only_movies = st.checkbox("Mostrar solo películas", key="only_movies")
     only_cannes = st.checkbox("Mostrar solo títulos con Cannes", key="only_cannes")
 
-with top2:
+    with top2:
 
-    col_enrich1, col_enrich2 = st.columns(2)
+        col_enrich1, col_enrich2 = st.columns(2)
 
-    with col_enrich1:
-        enrich_base = st.button("Enriquecer metadata base")
+        with col_enrich1:
+            enrich_base = st.button("Enriquecer metadata base")
 
-    with col_enrich2:
-        enrich_cannes = st.button("Enriquecer Cannes")
+        with col_enrich2:
+            enrich_cannes = st.button("Enriquecer Cannes")
 
-    # ---------------------------------
-    # ENRIQUECER METADATA BASE
-    # ---------------------------------
+        if enrich_base:
 
-    if enrich_base:
+            if not TMDB_API_KEY:
+                st.error("No se ha encontrado la API key de TMDB en secrets.toml")
 
-        if not TMDB_API_KEY:
-            st.error("No se ha encontrado la API key de TMDB en secrets.toml")
+            else:
+                try:
+                    df_actualizado, n_enriquecidos = enriquecer_filtro_actual(
+                        st.session_state.df_catalogo,
+                        TMDB_API_KEY,
+                        search=search,
+                        selected_type=selected_type,
+                        unique_titles=unique_titles,
+                        selected_show_class=selected_show_class,
+                        selected_country=selected_country,
+                        only_movies=only_movies,
+                        only_cannes=False,
+                        max_items=None
+                    )
 
-        else:
+                    st.session_state.df_catalogo = df_actualizado
+                    df = df_actualizado
+
+                    st.success(
+                        f"Metadata enriquecida ✅ ({n_enriquecidos} títulos procesados)"
+                    )
+
+                except Exception as e:
+                    st.error(f"Error enriqueciendo metadata: {e}")
+
+        if enrich_cannes:
+
             try:
-
-                df_actualizado, n_enriquecidos = enriquecer_filtro_actual(
+                df_actualizado, n_enriquecidos = enriquecer_cannes_filtro_actual(
                     st.session_state.df_catalogo,
-                    TMDB_API_KEY,
                     search=search,
                     selected_type=selected_type,
                     unique_titles=unique_titles,
                     selected_show_class=selected_show_class,
                     selected_country=selected_country,
-                    only_movies=only_movies,
-                    only_cannes=False,
+                    only_movies=True,
                     max_items=None
                 )
 
@@ -973,72 +1062,12 @@ with top2:
                 df = df_actualizado
 
                 st.success(
-                    f"Metadata enriquecida ✅ ({n_enriquecidos} títulos procesados)"
+                    f"Cannes enriquecido ✅ ({n_enriquecidos} títulos procesados)"
                 )
 
             except Exception as e:
-                st.error(f"Error enriqueciendo metadata: {e}")
+                st.error(f"Error enriqueciendo Cannes: {e}")
 
-    # ---------------------------------
-    # ENRIQUECER CANNES
-    # ---------------------------------
-
-    if enrich_cannes:
-
-        subset_cannes = aplicar_filtros(
-            st.session_state.df_catalogo,
-            search=search,
-            selected_type=selected_type,
-            unique_titles=unique_titles,
-            only_tmdb=False,
-            selected_show_class=selected_show_class,
-            selected_country=selected_country,
-            only_movies=True,
-            only_cannes=False
-        )
-
-        subset_cannes = subset_cannes[
-            subset_cannes["cannes_match"] != True
-        ]
-
-        total = len(subset_cannes)
-
-        if total == 0:
-
-            st.info("No hay títulos pendientes de enriquecer con Cannes")
-
-        else:
-
-            progress = st.progress(
-                0,
-                text="Enriqueciendo Cannes..."
-            )
-
-            for i, (idx, row) in enumerate(
-                subset_cannes.iterrows(),
-                start=1
-            ):
-
-                cannes_result = buscar_cannes_wikidata(
-                    row.get("original_title"),
-                    row.get("release_year")
-                )
-
-                st.session_state.df_catalogo.at[idx, "cannes_match"] = cannes_result["cannes_match"]
-                st.session_state.df_catalogo.at[idx, "cannes_awards"] = cannes_result["cannes_awards"]
-                st.session_state.df_catalogo.at[idx, "cannes_events"] = cannes_result["cannes_events"]
-                st.session_state.df_catalogo.at[idx, "cannes_years"] = cannes_result["cannes_years"]
-
-                progress.progress(
-                    i / total,
-                    text=f"Enriqueciendo Cannes... {i}/{total}"
-                )
-
-            st.success(
-                f"Cannes enriquecido ✅ ({total} títulos procesados)"
-            )
-
-            df = st.session_state.df_catalogo
     df_filtrado = aplicar_filtros(
         df=df,
         search=search,
@@ -1077,6 +1106,7 @@ with top2:
             "tmdb_match"
         ] if col in df_filtrado.columns
     ]
+
     st.subheader("Resultados")
     st.write(f"Resultados encontrados: {len(df_filtrado)}")
 
