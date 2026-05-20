@@ -757,17 +757,17 @@ def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selecte
 def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, selected_show_class, selected_country, only_movies=False, only_cannes=False, max_items=None):
     df = df.copy()
 
-    subset = aplicar_filtros(
-        df,
-        search=search,
-        selected_type=selected_type,
-        unique_titles=unique_titles,
-        only_tmdb=False,
-        selected_show_class=selected_show_class,
-        selected_country=selected_country,
-        only_movies=only_movies,
-        only_cannes=only_cannes
-    )
+subset = aplicar_filtros(
+    df,
+    search=search,
+    selected_type=selected_type,
+    unique_titles=unique_titles,
+    only_tmdb=False,
+    selected_show_class=selected_show_class,
+    selected_country=selected_country,
+    only_movies=only_movies,
+    only_cannes=False
+)
 
     subset = subset[subset["tmdb_match"] != True]
 
