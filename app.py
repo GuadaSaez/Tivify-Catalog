@@ -222,101 +222,11 @@ def clasificar_show(row):
 # -------------------------
 # OMDB AWARDS RAW
 # -------------------------
-# -------------------------
-# WIKIDATA CANNES
-# -------------------------
+
 @st.cache_data(show_spinner=False)
-def buscar_cannes_wikidata(title, year):
-
-    if not title:
-        return {
-            "cannes_match": False,
-            "cannes_awards": None,
-            "cannes_events": None,
-            "cannes_years": None,
-        }
-
-    query = f"""
-    SELECT ?film ?filmLabel ?awardLabel ?eventLabel ?date WHERE {{
-      ?film rdfs:label "{title}"@en.
-      ?film wdt:P31/wdt:P279* wd:Q11424.
-
-      OPTIONAL {{ ?film wdt:P166 ?award. }}
-      OPTIONAL {{ ?award rdfs:label ?awardLabel FILTER(LANG(?awardLabel)="en") }}
-
-      OPTIONAL {{ ?film wdt:P1344 ?event. }}
-      OPTIONAL {{ ?event rdfs:label ?eventLabel FILTER(LANG(?eventLabel)="en") }}
-
-      OPTIONAL {{ ?film wdt:P585 ?date. }}
-
-      SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en,es". }}
-
-      FILTER(
-        CONTAINS(LCASE(STR(?awardLabel)), "cannes") ||
-        CONTAINS(LCASE(STR(?eventLabel)), "cannes")
-      )
-    }}
-    """
-
-    params = {
-        "query": query,
-        "format": "json"
-    }
-
-    try:
-        response = requests.get(
-            "https://query.wikidata.org/sparql",
-            params=params,
-            timeout=30,
-            headers={"User-Agent": "TivifyCatalogApp/1.0"}
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        rows = data.get("results", {}).get("bindings", [])
-
-        if not rows:
-            return {
-                "cannes_match": False,
-                "cannes_awards": None,
-                "cannes_events": None,
-                "cannes_years": None,
-            }
-
-        awards = []
-        events = []
-        years = []
-
-        for row in rows:
-
-            if "awardLabel" in row:
-                awards.append(row["awardLabel"]["value"])
-
-            if "eventLabel" in row:
-                events.append(row["eventLabel"]["value"])
-
-            if "date" in row:
-                years.append(row["date"]["value"][:4])
-
-        return {
-            "cannes_match": True,
-            "cannes_awards": ", ".join(sorted(set(awards))) if awards else None,
-            "cannes_events": ", ".join(sorted(set(events))) if events else None,
-            "cannes_years": ", ".join(sorted(set(years))) if years else None,
-        }
-
-    except Exception:
-        return {
-            "cannes_match": False,
-            "cannes_awards": None,
-            "cannes_events": None,
-            "cannes_years": None,
-        }
-        @st.cache_data(show_spinner=False)
 def buscar_omdb_awards_raw(title, year, object_type, api_key):
-if not api_key or not title:
+
+    if not api_key or not title:
         return {"awards_raw": None, "omdb_match": False}
 
     omdb_type = "movie" if object_type == "movie" else "series"
@@ -335,8 +245,14 @@ if not api_key or not title:
             pass
 
     try:
-        response = requests.get("https://www.omdbapi.com/", params=params, timeout=30)
+        response = requests.get(
+            "https://www.omdbapi.com/",
+            params=params,
+            timeout=30
+        )
+
         response.raise_for_status()
+
         data = response.json()
 
         if data.get("Response") != "True":
@@ -350,7 +266,6 @@ if not api_key or not title:
     except Exception:
         return {"awards_raw": None, "omdb_match": False}
 
-# -------------------------
 # CARGA JSON
 # -------------------------
 @st.cache_data
