@@ -754,33 +754,50 @@ def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selecte
 # -------------------------
 # ENRIQUECER
 # -------------------------
-def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, selected_show_class, selected_country, only_movies=False, only_cannes=False, max_items=None):
+def enriquecer_filtro_actual(
+    df,
+    api_key,
+    search,
+    selected_type,
+    unique_titles,
+    selected_show_class,
+    selected_country,
+    only_movies=False,
+    only_cannes=False,
+    max_items=None
+):
+
     df = df.copy()
 
     subset = aplicar_filtros(
-    df,
-    search=search,
-    selected_type=selected_type,
-    unique_titles=unique_titles,
-    only_tmdb=False,
-    selected_show_class=selected_show_class,
-    selected_country=selected_country,
-    only_movies=only_movies,
-    only_cannes=False
-)
-subset = subset[subset["tmdb_match"] != True]
+        df,
+        search=search,
+        selected_type=selected_type,
+        unique_titles=unique_titles,
+        only_tmdb=False,
+        selected_show_class=selected_show_class,
+        selected_country=selected_country,
+        only_movies=only_movies,
+        only_cannes=False
+    )
 
-if max_items is not None:
+    subset = subset[subset["tmdb_match"] != True]
+
+    if max_items is not None:
         subset = subset.head(max_items)
 
-total = len(subset)
+    total = len(subset)
 
-if total == 0:
+    if total == 0:
         return df, 0
 
-    progress = st.progress(0, text="Enriqueciendo filtro con TMDB, OMDb y Cannes...")
+    progress = st.progress(
+        0,
+        text="Enriqueciendo filtro con TMDB, OMDb y Cannes..."
+    )
 
     for i, (idx, row) in enumerate(subset.iterrows(), start=1):
+
         result = buscar_tmdb_multi(row, api_key)
 
         df.at[idx, "tmdb_id"] = result["tmdb_id"]
@@ -815,18 +832,28 @@ if total == 0:
         df.at[idx, "cannes_events"] = cannes_result["cannes_events"]
         df.at[idx, "cannes_years"] = cannes_result["cannes_years"]
 
-        progress.progress(i / total, text=f"Enriqueciendo filtro con TMDB, OMDb y Cannes... {i}/{total}")
+        progress.progress(
+            i / total,
+            text=f"Enriqueciendo filtro con TMDB, OMDb y Cannes... {i}/{total}"
+        )
+
         time.sleep(0.03)
 
     df["title_display"] = df["tmdb_title_es"].fillna(df["title_final"])
 
-    for col in ["tmdb_vote_average", "tmdb_vote_count", "tmdb_popularity"]:
+    for col in [
+        "tmdb_vote_average",
+        "tmdb_vote_count",
+        "tmdb_popularity"
+    ]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if "object_type" in df.columns:
         mask_show = df["object_type"] == "show"
-        df.loc[mask_show, "show_classification"] = df.loc[mask_show].apply(clasificar_show, axis=1)
+        df.loc[mask_show, "show_classification"] = df.loc[
+            mask_show
+        ].apply(clasificar_show, axis=1)
 
     return df, total
 
