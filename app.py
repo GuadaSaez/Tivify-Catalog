@@ -757,7 +757,7 @@ def aplicar_filtros(df, search, selected_type, unique_titles, only_tmdb, selecte
 def enriquecer_filtro_actual(df, api_key, search, selected_type, unique_titles, selected_show_class, selected_country, only_movies=False, only_cannes=False, max_items=None):
     df = df.copy()
 
-subset = aplicar_filtros(
+    subset = aplicar_filtros(
     df,
     search=search,
     selected_type=selected_type,
@@ -768,14 +768,14 @@ subset = aplicar_filtros(
     only_movies=only_movies,
     only_cannes=False
 )
-    subset = subset[subset["tmdb_match"] != True]
+subset = subset[subset["tmdb_match"] != True]
 
-    if max_items is not None:
+if max_items is not None:
         subset = subset.head(max_items)
 
-    total = len(subset)
+total = len(subset)
 
-    if total == 0:
+if total == 0:
         return df, 0
 
     progress = st.progress(0, text="Enriqueciendo filtro con TMDB, OMDb y Cannes...")
